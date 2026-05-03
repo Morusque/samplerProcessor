@@ -1,7 +1,9 @@
 import importlib.util
+import copy
 import tempfile
 import unittest
 import wave
+import statistics
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -126,6 +128,55 @@ class FakeSortableModel:
 
     def extract_sample_path(self, zone):
         return zone.get("_sample_path", ""), zone.get("_relative_path", "")
+
+
+class FakeMidiModel:
+    def __init__(self, zone_specs, round_robin=False, round_robin_mode="0"):
+        self.zones = []
+        self.audio_map = {}
+        for index, spec in enumerate(zone_specs):
+            zone = {
+                "Name": spec.get("name", "zone{}".format(index)),
+                "RootKey": str(spec.get("root_key", 60)),
+                "KeyRange": dict(spec.get("key_range", {"min": "60", "max": "60", "xfade_min": "60", "xfade_max": "60"})),
+                "VelocityRange": dict(spec.get("velocity_range", {"min": "100", "max": "100", "xfade_min": "100", "xfade_max": "100"})),
+                "SelectorRange": dict(spec.get("selector_range", {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"})),
+                "SustainLoop": dict(spec.get("sustain_loop", {"start": "0", "end": "1000", "mode": "0", "crossfade": "0", "detune": "0"})),
+                "ReleaseLoop": dict(spec.get("release_loop", {"start": "0", "end": "1000", "mode": "0", "crossfade": "0", "detune": "0"})),
+            }
+            self.zones.append(zone)
+            self.audio_map[id(zone)] = SimpleNamespace(
+                zone_start=int(spec.get("zone_start", 0)),
+                zone_end=int(spec.get("zone_end", 1000)),
+                sample_rate=int(spec.get("sample_rate", 48000)),
+            )
+        self.summary = {
+            "round_robin": "true" if round_robin else "false",
+            "round_robin_mode": str(round_robin_mode),
+        }
+
+    def zone_count(self):
+        return len(self.zones)
+
+    def get_zone(self, index):
+        return self.zones[index]
+
+    def read_range(self, zone, tag):
+        return dict(zone[tag])
+
+    def read_loop(self, zone, tag):
+        return dict(zone[tag])
+
+    def read_global_summary(self):
+        return dict(self.summary)
+
+
+class FakeMidiAudioCache:
+    def __init__(self, model):
+        self.model = model
+
+    def get_zone_audio(self, _model, zone):
+        return self.model.audio_map[id(zone)]
 
 
 def make_loop_node(tag, start, end, mode="0", crossfade="0", detune="0"):
@@ -273,10 +324,86 @@ def write_test_wav(path, frame_count=256, sample_rate=48000):
 
 
 class SamplerAdvProcessorTests(unittest.TestCase):
+    def approved_preset_paths(self):
+        root = Path(__file__).with_name("testPresets01 Project") / "adv presets"
+        return sorted(root.glob("*.adv"))
+
+    def split_detection_metrics(self, model, sample_data, sample_rate, mode):
+        zone_starts = [
+            int(MODULE.parse_number_from_text(MODULE.get_value(model.get_zone(i), "SampleStart", "0"), 0))
+            for i in range(model.zone_count())
+        ]
+        zone_ends = [
+            int(MODULE.parse_number_from_text(MODULE.get_value(model.get_zone(i), "SampleEnd", "0"), 0))
+            for i in range(model.zone_count())
+        ]
+        zone_start = min(zone_starts)
+        zone_end = max(zone_ends)
+        samples = sample_data[zone_start:zone_end]
+        if mode == "gate":
+            onsets = MODULE.AudioAnalysis.detect_gate_onsets(
+                samples,
+                sample_rate,
+                sensitivity=float(MODULE.DEFAULT_GATE_SPLIT_SENSITIVITY),
+                min_duration_samples=int(MODULE.DEFAULT_GATE_SPLIT_MIN_DURATION),
+                profile_compression_pct=float(MODULE.DEFAULT_GATE_PROFILE_COMPRESSION),
+                stop_hysteresis_pct=float(MODULE.DEFAULT_GATE_STOP_HYSTERESIS_PCT),
+                start_placement=MODULE.DEFAULT_GATE_START_PLACEMENT,
+            )
+        else:
+            onsets = MODULE.AudioAnalysis.detect_onsets(
+                samples,
+                sample_rate,
+                sensitivity=float(MODULE.DEFAULT_DETECTION_SPLIT_SENSITIVITY),
+                min_duration_samples=int(MODULE.DEFAULT_DETECTION_SPLIT_MIN_DURATION),
+                profile_compression_pct=float(MODULE.DEFAULT_DETECTION_PROFILE_COMPRESSION),
+            )
+
+        predicted = [zone_start + int(onset) for onset in onsets]
+        manual = sorted(set(zone_starts))
+        remaining = predicted[:]
+        errors = []
+        for manual_start in manual:
+            if not remaining:
+                break
+            best = min(range(len(remaining)), key=lambda idx: abs(remaining[idx] - manual_start))
+            errors.append(remaining.pop(best) - manual_start)
+        abs_median = statistics.median([abs(err) for err in errors]) if errors else float("inf")
+        return {
+            "count_error": abs(len(predicted) - len(manual)),
+            "abs_median_error": float(abs_median),
+        }
+
     def load_model(self, filename):
         path = Path(__file__).with_name(filename)
+        if not path.exists():
+            if filename == "test02.adv":
+                return self.build_test02_model()
+            if filename == "test03.adv":
+                path = Path(__file__).with_name("test01.adv")
         tree = MODULE.AdvCodec.load(path)
         return MODULE.SamplerAdvModel(tree, source_path=path)
+
+    def build_test02_model(self):
+        base_path = Path(__file__).with_name("test01.adv")
+        tree = MODULE.AdvCodec.load(base_path)
+        model = MODULE.SamplerAdvModel(tree, source_path=base_path)
+        first_zone = model.get_zone(0)
+        root_keys = ("48", "66", "72")
+        container = model.sample_parts_container()
+        while model.zone_count() > 1:
+            container.remove(model.get_zone(model.zone_count() - 1))
+            model.refresh()
+        for _ in range(len(root_keys) - 1):
+            container.append(copy.deepcopy(first_zone))
+        model.refresh()
+        for index, root_key in enumerate(root_keys):
+            zone = model.get_zone(index)
+            MODULE.set_value(zone, "RootKey", root_key)
+            model.write_range(zone, "KeyRange", {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"})
+            model.write_range(zone, "VelocityRange", {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"})
+            model.write_range(zone, "SelectorRange", {"min": "0", "max": "0", "xfade_min": "0", "xfade_max": "0"})
+        return model
 
     def test_adv_roundtrip_preserves_zone_count(self):
         model = self.load_model("test01.adv")
@@ -295,7 +422,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
 
         self.assertEqual(model.zone_count(), 1)
         self.assertEqual(model.read_global_summary()["voices"], "32")
-        self.assertEqual(MODULE.get_value_by_path(model.root, "Player/InterpolationMode"), "0")
+        self.assertEqual(MODULE.get_value_by_path(model.root, "Player/InterpolationMode"), "1")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Volume"), "-12")
         self.assertEqual(MODULE.find_first_value_node_by_tag(model.root, "UserName").attrib.get("Value"), "")
         self.assertEqual(model.read_global_summary()["round_robin"], "false")
@@ -315,7 +442,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertIsNotNone(gui.model)
         self.assertEqual(gui.model.zone_count(), 1)
         self.assertEqual(gui.model.read_global_summary()["voices"], "32")
-        self.assertEqual(MODULE.get_value_by_path(gui.model.root, "Player/InterpolationMode"), "0")
+        self.assertEqual(MODULE.get_value_by_path(gui.model.root, "Player/InterpolationMode"), "1")
         self.assertEqual(MODULE.find_first_value_node_by_tag(gui.model.root, "UserName").attrib.get("Value"), "fresh")
         zone = gui.model.get_zone(0)
         self.assertEqual(MODULE.get_value(zone, "Name", ""), "fresh")
@@ -333,6 +460,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         gui.zone_vars = {"name": FakeVar("zone-a"), "root_key": FakeVar("60")}
         gui.range_vars = {"key_min": FakeVar("0")}
         gui.loop_vars = {"sustain_start": FakeVar("10")}
+        gui.template_comments_var = FakeVar("keep me")
         gui.global_vars = {"param_split_mode": FakeVar("gate"), "pitch_transpose_key": FakeVar("0")}
         gui.global_update = {"split_zones": FakeVar(False), "pitch_transpose_key": FakeVar(False)}
         gui.processing_update = {"split_zones": FakeVar(False)}
@@ -344,10 +472,12 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertNotIn("zone_values", data)
         self.assertNotIn("range_values", data)
         self.assertNotIn("loop_values", data)
+        self.assertEqual(data.get("comments"), "keep me")
 
         MODULE.SamplerAdvGui.apply_template(
             gui,
             {
+                "comments": "useful for recorder fixes",
                 "zone_values": {"name": "zone-b", "root_key": "72"},
                 "range_values": {"key_min": "24"},
                 "loop_values": {"sustain_start": "999"},
@@ -361,7 +491,8 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(gui.zone_vars["root_key"].get(), "60")
         self.assertEqual(gui.range_vars["key_min"].get(), "0")
         self.assertEqual(gui.loop_vars["sustain_start"].get(), "10")
-        self.assertEqual(gui.global_vars["param_split_mode"].get(), "detection")
+        self.assertEqual(gui.template_comments_var.get(), "useful for recorder fixes")
+        self.assertEqual(gui.global_vars["param_split_mode"].get(), "detect")
         self.assertEqual(gui.global_vars["pitch_transpose_key"].get(), "12")
         self.assertTrue(gui.global_update["pitch_transpose_key"].get())
         self.assertTrue(gui.processing_update["split_zones"].get())
@@ -510,6 +641,25 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual((ranges[0]["min"], ranges[0]["max"]), ("0", "42"))
         self.assertEqual((ranges[1]["min"], ranges[1]["max"]), ("43", "54"))
         self.assertEqual((ranges[2]["min"], ranges[2]["max"]), ("55", "127"))
+
+    def test_spread_first_note_interval_repeat_count_repeats_centers(self):
+        full_velocity = {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"}
+        full_selector = {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"}
+        model = FakeRangeModel([
+            ({"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"}, full_velocity, full_selector),
+            ({"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"}, full_velocity, full_selector),
+            ({"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"}, full_velocity, full_selector),
+            ({"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"}, full_velocity, full_selector),
+        ])
+
+        count = MODULE.SamplerProcessors.spread_first_note_interval(model, first_note=36, interval=12, repeat_count=2)
+        self.assertEqual(count, 4)
+
+        ranges = [model.read_range(model.get_zone(i), "KeyRange") for i in range(model.zone_count())]
+        self.assertEqual((ranges[0]["min"], ranges[0]["max"]), ("0", "42"))
+        self.assertEqual((ranges[1]["min"], ranges[1]["max"]), ("0", "42"))
+        self.assertEqual((ranges[2]["min"], ranges[2]["max"]), ("43", "127"))
+        self.assertEqual((ranges[3]["min"], ranges[3]["max"]), ("43", "127"))
 
     def test_velocity_distribution_linear_ranges(self):
         model = self.load_model("test02.adv")
@@ -754,6 +904,51 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(model.read_range(zone, "VelocityRange"), {"min": "110", "max": "110", "xfade_min": "110", "xfade_max": "110"})
         self.assertEqual(model.read_range(zone, "SelectorRange"), {"min": "1", "max": "1", "xfade_min": "1", "xfade_max": "1"})
 
+    def test_filename_mapping_uses_zone_name_when_paths_are_empty(self):
+        model = FakeSortableModel([
+            {
+                "name": "hit p072 v090 c004 d+7",
+                "root_key": 60,
+                "key_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+                "velocity_range": {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"},
+                "selector_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+                "sample_path": "",
+                "relative_path": "",
+            }
+        ])
+        zone = model.get_zone(0)
+        zone["Detune"] = "0"
+
+        count = MODULE.SamplerProcessors.apply_filename_mapping(model)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(zone["RootKey"], "72")
+        self.assertEqual(zone["Detune"], "7")
+        self.assertEqual(model.read_range(zone, "VelocityRange")["min"], "90")
+        self.assertEqual(model.read_range(zone, "SelectorRange")["min"], "4")
+
+    def test_filename_mapping_clamps_values(self):
+        model = FakeSortableModel([
+            {
+                "name": "zone-b",
+                "root_key": 60,
+                "key_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+                "velocity_range": {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"},
+                "selector_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+                "sample_path": "pad p999 v999 c999 d-999.wav",
+            }
+        ])
+        zone = model.get_zone(0)
+        zone["Detune"] = "0"
+
+        count = MODULE.SamplerProcessors.apply_filename_mapping(model)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(zone["RootKey"], "127")
+        self.assertEqual(zone["Detune"], "-50")
+        self.assertEqual(model.read_range(zone, "VelocityRange")["min"], "127")
+        self.assertEqual(model.read_range(zone, "SelectorRange")["min"], "127")
+
     def test_run_enabled_processors_spreads_key_before_velocity(self):
         model = self.load_model("test02.adv")
 
@@ -789,6 +984,237 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(root_key, 69)
         self.assertAlmostEqual(cents, 0.0, delta=0.01)
         self.assertAlmostEqual(MODULE.AudioAnalysis.midi_key_to_frequency(69, diapason_hz=432.0), 432.0, delta=0.01)
+
+    def test_detect_zone_pitch_uses_configured_tune_window(self):
+        zone = MODULE.ET.Element("MultiSamplePart")
+        for tag, value in (
+            ("Name", "pitch-window"),
+            ("RootKey", "60"),
+            ("Detune", "0"),
+            ("SampleStart", "0"),
+            ("SampleEnd", "1000"),
+        ):
+            MODULE.ET.SubElement(zone, tag).set("Value", str(value))
+        samples = MODULE.np.arange(1000, dtype=MODULE.np.float32)
+        audio = SimpleNamespace(samples=samples, sample_rate=1000)
+
+        class PitchWindowModel:
+            def zone_count(self_nonlocal):
+                return 1
+
+            def get_zone(self_nonlocal, index):
+                if index != 0:
+                    raise IndexError(index)
+                return zone
+
+        class PitchWindowAudioCache:
+            def get_zone_audio(self_nonlocal, _model, _zone):
+                return audio
+
+        model = PitchWindowModel()
+        audio_cache = PitchWindowAudioCache()
+        captured = {}
+        original = MODULE.AudioAnalysis.detect_pitch_hz
+
+        def fake_detect_pitch_hz(window_samples, sample_rate, min_hz=24.0, max_hz=2000.0):
+            captured["samples"] = MODULE.np.asarray(window_samples).copy()
+            captured["sample_rate"] = sample_rate
+            return 440.0
+
+        MODULE.AudioAnalysis.detect_pitch_hz = fake_detect_pitch_hz
+        try:
+            count = MODULE.SamplerProcessors.detect_zone_pitch(
+                model,
+                {
+                    "pitch_detection_root": True,
+                    "pitch_detection_detune": False,
+                    "param_diapason_hz": "440",
+                    "param_pitch_window_start_number": "250",
+                    "param_pitch_window_start_unit": "samples",
+                    "param_pitch_window_stop_number": "750",
+                    "param_pitch_window_stop_unit": "samples",
+                },
+                audio_cache,
+            )
+        finally:
+            MODULE.AudioAnalysis.detect_pitch_hz = original
+
+        self.assertEqual(count, 1)
+        self.assertEqual(captured["sample_rate"], 1000)
+        self.assertEqual(len(captured["samples"]), 500)
+        self.assertEqual(float(captured["samples"][0]), 250.0)
+        self.assertEqual(float(captured["samples"][-1]), 749.0)
+        self.assertEqual(MODULE.get_value(zone, "RootKey", ""), "69")
+
+    def test_detect_pitch_hz_corrects_subharmonic_on_flute_zone(self):
+        adv_path = Path(__file__).with_name("testPresets01 Project") / "adv presets" / "acoustic wood recorder flute 01.adv"
+        wav_path = Path(__file__).with_name("testPresets01 Project") / "Samples" / "Imported" / "2024 12 09 flute 01.wav"
+        model = MODULE.SamplerAdvModel(MODULE.AdvCodec.load(adv_path), source_path=adv_path)
+        zone = model.get_zone(6)
+        audio, sample_rate = MODULE.sf.read(str(wav_path), dtype="float32", always_2d=True)
+        mono = audio.mean(axis=1)
+        start = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "SampleStart", "0"), 0))
+        end = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "SampleEnd", str(len(mono))), len(mono)))
+        hz = MODULE.AudioAnalysis.detect_pitch_hz(mono[start:end], sample_rate)
+        midi_float, _root, _cents = MODULE.AudioAnalysis.frequency_to_midi_parts(hz, diapason_hz=440.0)
+        stored_root = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "RootKey", "0"), 0))
+        stored_detune = float(MODULE.parse_number_from_text(MODULE.get_value(zone, "Detune", "0"), 0))
+        self.assertLess(abs(midi_float - (stored_root + (stored_detune / 100.0))), 2.0)
+
+    def test_detect_pitch_hz_recorder_flute_corpus_has_no_large_outliers(self):
+        corpus = [
+            ("adv presets/acoustic wood recorder flute 01.adv", "Samples/Imported/2024 12 09 flute 01.wav"),
+            ("adv presets/tenor plastic recorder 01.adv", "Samples/Imported/tenor recorder 01.wav"),
+        ]
+        project_root = Path(__file__).with_name("testPresets01 Project")
+        max_abs_errors = []
+        for adv_rel, wav_rel in corpus:
+            adv_path = project_root / adv_rel
+            wav_path = project_root / wav_rel
+            model = MODULE.SamplerAdvModel(MODULE.AdvCodec.load(adv_path), source_path=adv_path)
+            audio, sample_rate = MODULE.sf.read(str(wav_path), dtype="float32", always_2d=True)
+            mono = audio.mean(axis=1)
+            errors = []
+            for index in range(model.zone_count()):
+                zone = model.get_zone(index)
+                start = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "SampleStart", "0"), 0))
+                end = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "SampleEnd", str(len(mono))), len(mono)))
+                hz = MODULE.AudioAnalysis.detect_pitch_hz(mono[start:end], sample_rate)
+                if hz is None:
+                    continue
+                midi_float, _root, _cents = MODULE.AudioAnalysis.frequency_to_midi_parts(hz, diapason_hz=440.0)
+                stored_root = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "RootKey", "0"), 0))
+                stored_detune = float(MODULE.parse_number_from_text(MODULE.get_value(zone, "Detune", "0"), 0))
+                errors.append(midi_float - (stored_root + (stored_detune / 100.0)))
+            max_abs_errors.append(max(abs(err) for err in errors))
+        self.assertLess(max(max_abs_errors), 2.0)
+
+    def test_find_loop_points_snaps_flute_zone_to_zero_crossings(self):
+        adv_path = Path(__file__).with_name("testPresets01 Project") / "adv presets" / "acoustic wood recorder flute 01.adv"
+        wav_path = Path(__file__).with_name("testPresets01 Project") / "Samples" / "Imported" / "2024 12 09 flute 01.wav"
+        model = MODULE.SamplerAdvModel(MODULE.AdvCodec.load(adv_path), source_path=adv_path)
+        audio, sample_rate = MODULE.sf.read(str(wav_path), dtype="float32", always_2d=True)
+        mono = audio.mean(axis=1)
+        found = False
+        for zone_index in range(model.zone_count()):
+            zone = model.get_zone(zone_index)
+            zone_start = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "SampleStart", "0"), 0))
+            zone_end = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "SampleEnd", str(len(mono))), len(mono)))
+            slice_samples = mono[zone_start:zone_end]
+            loop_vals = model.read_loop(zone, "SustainLoop")
+            target_start = int(loop_vals["start"]) - zone_start
+            target_end = int(loop_vals["end"]) - zone_start
+            search_range = int((target_end - target_start) * 0.10)
+            loop_info = MODULE.AudioAnalysis.find_loop_points(
+                slice_samples,
+                sample_rate,
+                target_start_sample=target_start,
+                target_end_sample=target_end,
+                search_range_samples=search_range,
+                fade_policy="No fade",
+                fade_custom_number="0",
+                fade_custom_unit="%",
+            )
+            if loop_info is None:
+                continue
+            start_cross = MODULE.AudioAnalysis.nearest_zero_crossing(slice_samples, loop_info["start"])
+            end_cross = MODULE.AudioAnalysis.nearest_zero_crossing(slice_samples, loop_info["end"] - 1)
+            if start_cross is None or end_cross is None:
+                continue
+            self.assertLessEqual(start_cross["distance"], 1.0)
+            self.assertLessEqual(end_cross["distance"], 1.0)
+            found = True
+            break
+        self.assertTrue(found)
+
+    def test_gate_detection_beats_detection_on_approved_single_sample_presets(self):
+        cache = MODULE.ZoneAudioCache()
+        better_or_equal = []
+        for adv_path in self.approved_preset_paths():
+            model = MODULE.SamplerAdvModel(MODULE.AdvCodec.load(adv_path), source_path=adv_path)
+            sample_paths = {
+                str(model.resolve_sample_file(model.get_zone(i)))
+                for i in range(model.zone_count())
+            }
+            if len(sample_paths) != 1:
+                continue
+            zone_audio = cache.get_zone_audio(model, model.get_zone(0))
+            detection_metrics = self.split_detection_metrics(model, zone_audio.audio, zone_audio.sample_rate, "detection")
+            gate_metrics = self.split_detection_metrics(model, zone_audio.audio, zone_audio.sample_rate, "gate")
+            better_or_equal.append(
+                gate_metrics["count_error"] <= detection_metrics["count_error"]
+                and gate_metrics["abs_median_error"] <= detection_metrics["abs_median_error"]
+            )
+        self.assertTrue(better_or_equal)
+        self.assertTrue(all(better_or_equal))
+
+    def test_build_midi_test_plan_repeats_non_random_round_robin_and_uses_selector_cc(self):
+        model = FakeMidiModel(
+            [
+                {
+                    "name": "rr_a",
+                    "key_range": {"min": "60", "max": "60", "xfade_min": "60", "xfade_max": "60"},
+                    "velocity_range": {"min": "40", "max": "40", "xfade_min": "40", "xfade_max": "40"},
+                    "selector_range": {"min": "10", "max": "10", "xfade_min": "10", "xfade_max": "10"},
+                },
+                {
+                    "name": "rr_b",
+                    "key_range": {"min": "60", "max": "60", "xfade_min": "60", "xfade_max": "60"},
+                    "velocity_range": {"min": "40", "max": "40", "xfade_min": "40", "xfade_max": "40"},
+                    "selector_range": {"min": "10", "max": "10", "xfade_min": "10", "xfade_max": "10"},
+                },
+                {
+                    "name": "other",
+                    "key_range": {"min": "62", "max": "62", "xfade_min": "62", "xfade_max": "62"},
+                    "velocity_range": {"min": "90", "max": "90", "xfade_min": "90", "xfade_max": "90"},
+                    "selector_range": {"min": "80", "max": "80", "xfade_min": "80", "xfade_max": "80"},
+                },
+            ],
+            round_robin=True,
+            round_robin_mode="0",
+        )
+        plan = MODULE.build_midi_test_plan(model, FakeMidiAudioCache(model), tempo_bpm=100.0, selector_cc=1)
+        self.assertTrue(plan["use_selector_cc"])
+        self.assertFalse(plan["round_robin_random"])
+        self.assertEqual(len(plan["events"]), 3)
+        self.assertEqual([(item["note"], item["velocity"], item["selector"]) for item in plan["events"]], [(60, 40, 10), (60, 40, 10), (62, 90, 80)])
+
+    def test_build_midi_test_plan_uses_root_note_clamped_inside_key_range(self):
+        model = FakeMidiModel(
+            [
+                {
+                    "name": "zone",
+                    "root_key": 72,
+                    "key_range": {"min": "60", "max": "67", "xfade_min": "60", "xfade_max": "67"},
+                    "velocity_range": {"min": "80", "max": "100", "xfade_min": "80", "xfade_max": "100"},
+                    "selector_range": {"min": "0", "max": "0", "xfade_min": "0", "xfade_max": "0"},
+                }
+            ]
+        )
+        plan = MODULE.build_midi_test_plan(model, FakeMidiAudioCache(model), tempo_bpm=100.0, selector_cc=1)
+        self.assertEqual(len(plan["events"]), 1)
+        self.assertEqual(plan["events"][0]["note"], 67)
+
+    def test_write_midi_file_creates_valid_header(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "midi_test.mid"
+            events = MODULE.build_midi_test_events(
+                [
+                    {"note": 60, "velocity": 90, "selector": 10, "hold_seconds": 0.25, "tail_seconds": 0.10, "use_selector_cc": True},
+                    {"note": 62, "velocity": 100, "selector": 80, "hold_seconds": 0.25, "tail_seconds": 0.10, "use_selector_cc": True},
+                ],
+                tempo_bpm=100.0,
+                selector_cc=1,
+            )
+            MODULE.write_midi_file(out_path, events, tempo_bpm=100.0, track_name="MIDI_test")
+            data = out_path.read_bytes()
+
+        self.assertTrue(data.startswith(b"MThd"))
+        self.assertIn(b"MTrk", data)
+
+    def test_parse_filename_mapping_tokens_is_case_insensitive_and_last_token_wins(self):
+        tokens = MODULE.SamplerProcessors.parse_filename_mapping_tokens("take_p064-V110_c001 d+12 other P065")
+        self.assertEqual(tokens, {"P": 65, "V": 110, "C": 1, "D": 12})
 
     def test_detect_onsets_finds_multiple_bursts(self):
         sr = 48000
@@ -1416,7 +1842,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.get_value_by_path(model.root, "VelDst/ModConnections.0/Amount"), "77")
         self.assertEqual(MODULE.get_value_by_path(model.root, "MidiCtrl.0/Feedback"), "1")
 
-    def test_apply_global_values_synthesizes_missing_lfo_and_routing_nodes(self):
+    def test_apply_global_values_skips_optional_missing_aux_lfo_and_routing_nodes(self):
         model = self.load_model("test01.adv")
 
         model.apply_global_values(
@@ -1428,12 +1854,12 @@ class SamplerAdvProcessorTests(unittest.TestCase):
             {"generic_lfo": True},
         )
 
-        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency"), "6.25")
-        self.assertEqual(MODULE.get_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst/ModConnections.0/Amount"), "17")
-        self.assertEqual(MODULE.get_value_by_path(model.root, "MidiCtrl.7/Feedback"), "1")
+        self.assertIsNone(MODULE.get_manual_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency"))
+        self.assertIsNone(MODULE.get_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst/ModConnections.0/Amount"))
+        self.assertIsNone(MODULE.get_value_by_path(model.root, "MidiCtrl.7/Feedback"))
 
     def test_apply_global_values_updates_generic_filter_manual_nodes(self):
-        model = self.load_model("test03.adv")
+        model = self.load_model("test01.adv")
 
         model.apply_global_values(
             {

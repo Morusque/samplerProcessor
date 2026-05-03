@@ -1,14 +1,15 @@
 
+done, to be tested :
+
 sorted mostly from probably quickest to more complex :
-- the logic for the release section looks ok when applying it but I think it's still just the visualisation of release zone not updating correctly or something
-- add a MIDI_test export. the goal of this file would be to create a test file where every sample zone should be played at least once and until the end or completed a loop once at a given tempo (100BPM), notes should also play from lowest to highest, and from lowest velocity to highest, several times if round-robin alternatives are involved (assuming not random so each play once only) so I can check everything is right by ear
-- tune dection is sometimes wrong (we can use the two recorder/flute example files as a test for comparison)
-- looping points detection is still wrong and shoots not on zero crossings, I think it used to be better (we can use the flute example file as a test for comparison)
-- check detection against approved presets, include the preset checks in the test file?
-- gate seems better than detection. Is there any case where detection is better? Otherwise we can get rid of it
-- we'll have to test and refine exactly what values in lfo and filter section mean
-- more extensive tests of "use file names to set key velo chain etc"
-- make a special panel at the end and put in it everything legacy or unreachable from the usual Live UI, or unknown / unsure
+
+test or define first :
 - check what "sub osc on" is, the way it is placed in the ui and the name suggest something else than the osc section
+- make a special panel at the end and put in it everything legacy or unreachable from the usual Live UI, or unknown / unsure
+- test and refine exactly what values in lfo and filter section mean
+- more extensive tests of "use file names to set key velo chain etc"
 - discuss file ops
-- threading
+- typical presets : make two typical presets, one normalized, then one velo calculated, also make a "refine points" one
+- could the "global/processing settings" be a section on its own called "split" with the split button directly in it? and have other processing things handled differently (eg only saved with the file)
+- more tests on approved files (including refined files) mainly for the tuning part
+- investigate threading (this should not be mixed with other tasks)

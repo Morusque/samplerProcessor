@@ -113,6 +113,10 @@ DEFAULT_GATE_PROFILE_COMPRESSION = "100"
 DEFAULT_GATE_STOP_HYSTERESIS_PCT = "60"
 DEFAULT_GATE_START_PLACEMENT = "local attack"
 DEFAULT_DIAPASON_HZ = "440"
+DEFAULT_PITCH_WINDOW_START_NUMBER = "0"
+DEFAULT_PITCH_WINDOW_START_UNIT = "ms"
+DEFAULT_PITCH_WINDOW_STOP_NUMBER = "100"
+DEFAULT_PITCH_WINDOW_STOP_UNIT = "%"
 WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS = 2.0
 
 SUSTAIN_MODE_VALUES = {
@@ -257,7 +261,7 @@ MANUAL_TEMPLATE_SPECS = {
     "Lfo": [
         ("IsOn", "bool", "false", None, None, False),
         ("Slot/Value/SimplerLfo/Type", "numeric", "0", "0", "5", False),
-        ("Slot/Value/SimplerLfo/Frequency", "numeric", "4.43943739", "0.009999999776", "30", True),
+        ("Slot/Value/SimplerLfo/Frequency", "numeric", "7", "0.009999999776", "30", True),
         ("Slot/Value/SimplerLfo/RateType", "numeric", "0", "0", "1", False),
         ("Slot/Value/SimplerLfo/BeatRate", "numeric", "4", "0", "21", True),
         ("Slot/Value/SimplerLfo/StereoMode", "numeric", "0", "0", "1", False),
@@ -272,35 +276,39 @@ MANUAL_TEMPLATE_SPECS = {
     ],
     "AuxLfos.0": [
         ("IsOn", "bool", "false", None, None, False),
-        ("Slot/Value/SimplerAuxLfo/Type", "numeric", "0", "0", "5", False),
-        ("Slot/Value/SimplerAuxLfo/Frequency", "numeric", "4.43943739", "0.009999999776", "30", True),
-        ("Slot/Value/SimplerAuxLfo/RateType", "numeric", "0", "0", "1", False),
-        ("Slot/Value/SimplerAuxLfo/BeatRate", "numeric", "4", "0", "21", True),
-        ("Slot/Value/SimplerAuxLfo/StereoMode", "numeric", "0", "0", "1", False),
-        ("Slot/Value/SimplerAuxLfo/Spin", "numeric", "0", "0", "0.5", True),
-        ("Slot/Value/SimplerAuxLfo/Phase", "numeric", "0", "0", "360", True),
-        ("Slot/Value/SimplerAuxLfo/Offset", "numeric", "0", "0", "360", True),
-        ("Slot/Value/SimplerAuxLfo/FrequencyKeyScale", "numeric", "0", "0", "1", True),
-        ("Slot/Value/SimplerAuxLfo/Smooth", "numeric", "0.5", "0", "1", True),
-        ("Slot/Value/SimplerAuxLfo/Attack", "numeric", "0.1000000015", "0.1000000015", "20000", True),
-        ("Slot/Value/SimplerAuxLfo/Retrigger", "bool", "true", None, None, False),
-        ("Slot/Value/SimplerAuxLfo/Width", "numeric", "0", "0", "1", True),
+    ],
+    "AuxLfos.0/Slot/Value/SimplerAuxLfo": [
+        ("Type", "numeric", "0", "0", "5", False),
+        ("Frequency", "numeric", "4.43943739", "0.009999999776", "30", True),
+        ("RateType", "numeric", "0", "0", "1", False),
+        ("BeatRate", "numeric", "4", "0", "21", True),
+        ("StereoMode", "numeric", "0", "0", "1", False),
+        ("Spin", "numeric", "0", "0", "0.5", True),
+        ("Phase", "numeric", "0", "0", "360", True),
+        ("Offset", "numeric", "0", "0", "360", True),
+        ("FrequencyKeyScale", "numeric", "0", "0", "1", True),
+        ("Smooth", "numeric", "0.5", "0", "1", True),
+        ("Attack", "numeric", "0.1000000015", "0.1000000015", "20000", True),
+        ("Retrigger", "bool", "true", None, None, False),
+        ("Width", "numeric", "0", "0", "1", True),
     ],
     "AuxLfos.1": [
         ("IsOn", "bool", "false", None, None, False),
-        ("Slot/Value/SimplerAuxLfo/Type", "numeric", "0", "0", "5", False),
-        ("Slot/Value/SimplerAuxLfo/Frequency", "numeric", "4.43943739", "0.009999999776", "30", True),
-        ("Slot/Value/SimplerAuxLfo/RateType", "numeric", "0", "0", "1", False),
-        ("Slot/Value/SimplerAuxLfo/BeatRate", "numeric", "4", "0", "21", True),
-        ("Slot/Value/SimplerAuxLfo/StereoMode", "numeric", "0", "0", "1", False),
-        ("Slot/Value/SimplerAuxLfo/Spin", "numeric", "0", "0", "0.5", True),
-        ("Slot/Value/SimplerAuxLfo/Phase", "numeric", "0", "0", "360", True),
-        ("Slot/Value/SimplerAuxLfo/Offset", "numeric", "0", "0", "360", True),
-        ("Slot/Value/SimplerAuxLfo/FrequencyKeyScale", "numeric", "0", "0", "1", True),
-        ("Slot/Value/SimplerAuxLfo/Smooth", "numeric", "0.5", "0", "1", True),
-        ("Slot/Value/SimplerAuxLfo/Attack", "numeric", "0.1000000015", "0.1000000015", "20000", True),
-        ("Slot/Value/SimplerAuxLfo/Retrigger", "bool", "true", None, None, False),
-        ("Slot/Value/SimplerAuxLfo/Width", "numeric", "0", "0", "1", True),
+    ],
+    "AuxLfos.1/Slot/Value/SimplerAuxLfo": [
+        ("Type", "numeric", "0", "0", "5", False),
+        ("Frequency", "numeric", "4.43943739", "0.009999999776", "30", True),
+        ("RateType", "numeric", "0", "0", "1", False),
+        ("BeatRate", "numeric", "4", "0", "21", True),
+        ("StereoMode", "numeric", "0", "0", "1", False),
+        ("Spin", "numeric", "0", "0", "0.5", True),
+        ("Phase", "numeric", "0", "0", "360", True),
+        ("Offset", "numeric", "0", "0", "360", True),
+        ("FrequencyKeyScale", "numeric", "0", "0", "1", True),
+        ("Smooth", "numeric", "0.5", "0", "1", True),
+        ("Attack", "numeric", "0.1000000015", "0.1000000015", "20000", True),
+        ("Retrigger", "bool", "true", None, None, False),
+        ("Width", "numeric", "0", "0", "1", True),
     ],
     "AuxEnv": [
         ("IsOn", "bool", "false", None, None, False),
@@ -496,6 +504,18 @@ VALUE_TEMPLATE_SPECS = {
         ("ModConnections.1/Amount", "0"),
         ("ModConnections.1/Connection", "0"),
     ],
+}
+
+OPTIONAL_GENERIC_MANUAL_BASES = {
+    "AuxLfos.0/Slot/Value/SimplerAuxLfo",
+    "AuxLfos.1/Slot/Value/SimplerAuxLfo",
+}
+
+OPTIONAL_GENERIC_VALUE_BASES = {
+    "MidiCtrl.6",
+    "MidiCtrl.7",
+    "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst",
+    "AuxLfos.1/Slot/Value/SimplerAuxLfo/ModDst",
 }
 
 
@@ -880,6 +900,14 @@ def ensure_direct_value_path(root, path):
         ensure_value_group_template(root, base_path)
 
 
+def generic_manual_group_has_existing_content(root, base_path):
+    return bool(list_manual_parameter_paths(root, base_path))
+
+
+def generic_value_group_has_existing_content(root, base_path):
+    return bool(list_value_parameter_paths(root, base_path))
+
+
 def merged_template_manual_paths(root, base_path):
     template_specs = MANUAL_TEMPLATE_SPECS.get(base_path, [])
     existing = {path: value for path, value in list_manual_parameter_paths(root, base_path)}
@@ -1255,7 +1283,11 @@ class SamplerAdvModel:
             candidates.append(Path(sample_path))
 
         if relative_path and self.source_path is not None:
-            candidates.append(self.source_path.parent / Path(relative_path))
+            rel = Path(relative_path)
+            for base in [self.source_path.parent] + list(self.source_path.parent.parents[:4]):
+                candidate = base / rel
+                if candidate not in candidates:
+                    candidates.append(candidate)
 
         for candidate in candidates:
             try:
@@ -1780,6 +1812,9 @@ class SamplerAdvModel:
                     if not str(key).startswith("param_lfo_value::"):
                         continue
                     path = str(key).split("::", 1)[1]
+                    base_path = matching_template_base(path, VALUE_TEMPLATE_SPECS)
+                    if base_path in OPTIONAL_GENERIC_VALUE_BASES and not generic_value_group_has_existing_content(self.root, base_path):
+                        continue
                     enum_id = enum_id_for_path(path)
                     if enum_id and enum_id != "__hidden__":
                         value = enum_value_from_label(enum_id, value)
@@ -1788,6 +1823,9 @@ class SamplerAdvModel:
                     updated += 1
                     continue
                 path = str(key).split("::", 1)[1]
+                base_path = matching_template_base(path, MANUAL_TEMPLATE_SPECS)
+                if base_path in OPTIONAL_GENERIC_MANUAL_BASES and not generic_manual_group_has_existing_content(self.root, base_path):
+                    continue
                 enum_id = enum_id_for_path(path)
                 if enum_id and enum_id != "__hidden__":
                     value = enum_value_from_label(enum_id, value)
@@ -1914,6 +1952,214 @@ def midi_key_to_note_label(midi_key):
     midi_key = clamp_int(midi_key, 0, 127)
     octave = (midi_key // 12) - 2
     return "{} {}".format(note_names[midi_key % 12], octave)
+
+
+def midi_var_len(value):
+    value = max(0, int(value))
+    buffer = value & 0x7F
+    result = bytearray([buffer])
+    value >>= 7
+    while value:
+        buffer = 0x80 | (value & 0x7F)
+        result.insert(0, buffer)
+        value >>= 7
+    return bytes(result)
+
+
+def midi_seconds_to_ticks(seconds, tempo_bpm=100.0, ticks_per_quarter=480):
+    seconds = max(0.0, float(seconds))
+    quarter_seconds = 60.0 / max(1e-9, float(tempo_bpm))
+    return max(0, int(round((seconds / quarter_seconds) * int(ticks_per_quarter))))
+
+
+def write_midi_file(path, events, tempo_bpm=100.0, ticks_per_quarter=480, track_name="MIDI_test"):
+    path = Path(path)
+    ticks_per_quarter = int(ticks_per_quarter)
+    microseconds_per_quarter = int(round(60000000.0 / max(1e-9, float(tempo_bpm))))
+
+    track = bytearray()
+    track.extend(midi_var_len(0))
+    track.extend(b"\xff\x03")
+    encoded_name = str(track_name).encode("utf-8", errors="replace")
+    track.extend(midi_var_len(len(encoded_name)))
+    track.extend(encoded_name)
+
+    track.extend(midi_var_len(0))
+    track.extend(b"\xff\x51\x03")
+    track.extend(microseconds_per_quarter.to_bytes(3, "big"))
+
+    for delta_ticks, payload in events:
+        track.extend(midi_var_len(delta_ticks))
+        track.extend(bytes(payload))
+
+    track.extend(midi_var_len(0))
+    track.extend(b"\xff\x2f\x00")
+
+    header = bytearray()
+    header.extend(b"MThd")
+    header.extend((6).to_bytes(4, "big"))
+    header.extend((0).to_bytes(2, "big"))
+    header.extend((1).to_bytes(2, "big"))
+    header.extend(int(ticks_per_quarter).to_bytes(2, "big"))
+
+    chunk = bytearray()
+    chunk.extend(b"MTrk")
+    chunk.extend(len(track).to_bytes(4, "big"))
+    chunk.extend(track)
+    path.write_bytes(bytes(header + chunk))
+
+
+def zone_range_midpoint(range_vals, default_value):
+    try:
+        mn = clamp_int(range_vals.get("min", default_value), 0, 127)
+        mx = clamp_int(range_vals.get("max", default_value), 0, 127)
+    except Exception:
+        return clamp_int(default_value, 0, 127)
+    if mx < mn:
+        mn, mx = mx, mn
+    return clamp_int(int(round((mn + mx) / 2.0)), 0, 127)
+
+
+def note_inside_range_near_root(range_vals, root_key):
+    try:
+        mn = clamp_int(range_vals.get("min", root_key), 0, 127)
+        mx = clamp_int(range_vals.get("max", root_key), 0, 127)
+    except Exception:
+        return clamp_int(root_key, 0, 127)
+    if mx < mn:
+        mn, mx = mx, mn
+    root_key = clamp_int(root_key, 0, 127)
+    return clamp_int(root_key, mn, mx)
+
+
+def zone_simple_value(zone, tag, default_value=""):
+    if isinstance(zone, dict):
+        return str(zone.get(tag, default_value))
+    return get_value(zone, tag, default_value)
+
+
+def zone_loop_runtime_seconds(model, zone, zone_audio):
+    zone_start = int(zone_audio.zone_start)
+    zone_end = int(zone_audio.zone_end)
+    sample_rate = max(1, int(zone_audio.sample_rate))
+    full_duration = max(0.05, (zone_end - zone_start) / float(sample_rate))
+
+    sustain = model.read_loop(zone, "SustainLoop")
+    sustain_mode = str(sustain.get("mode", "")).strip()
+    try:
+        sustain_start = clamp_int(sustain.get("start", zone_start), zone_start, max(zone_start, zone_end - 1))
+        sustain_end = clamp_int(sustain.get("end", zone_end), sustain_start + 1, zone_end)
+    except Exception:
+        sustain_start = zone_start
+        sustain_end = zone_end
+    sustain_loop_length = max(1, sustain_end - sustain_start)
+    sustain_hold = full_duration
+    if sustain_mode in ("1", "2", "3"):
+        sustain_hold = max(0.05, ((sustain_start - zone_start) + sustain_loop_length) / float(sample_rate))
+
+    release = model.read_loop(zone, "ReleaseLoop")
+    release_mode = str(release.get("mode", "")).strip()
+    release_wait = 0.10
+    if release_mode != "0":
+        try:
+            release_start = clamp_int(release.get("start", zone_start), zone_start, max(zone_start, zone_end - 1))
+            release_end = clamp_int(release.get("end", zone_end), release_start + 1, zone_end)
+        except Exception:
+            release_start = zone_start
+            release_end = zone_end
+        release_note_off = max(0.05, (release_start - zone_start) / float(sample_rate))
+        release_span = max(0.05, (zone_end - release_start) / float(sample_rate))
+        release_loop_length = max(1, release_end - release_start)
+        if release_mode in ("2", "3"):
+            release_span = max(release_span, (release_end - release_start + release_loop_length) / float(sample_rate))
+        return min(sustain_hold, release_note_off), min(6.0, release_span)
+
+    return sustain_hold, release_wait
+
+
+def build_midi_test_plan(model, audio_cache, tempo_bpm=100.0, selector_cc=1):
+    summary = model.read_global_summary()
+    rr_enabled = str(summary.get("round_robin", "")).strip().lower() == "true"
+    rr_mode_raw = str(summary.get("round_robin_mode", "")).strip()
+    rr_mode = ROUND_ROBIN_MODE_VALUE_TO_LABEL.get(rr_mode_raw, rr_mode_raw)
+    rr_random = rr_enabled and rr_mode == "random"
+
+    zones = []
+    selector_values = set()
+    for index in range(model.zone_count()):
+        zone = model.get_zone(index)
+        key_range = model.read_range(zone, "KeyRange")
+        velocity_range = model.read_range(zone, "VelocityRange")
+        selector_range = model.read_range(zone, "SelectorRange")
+        root_key = parse_number_from_text(zone_simple_value(zone, "RootKey", "60"), 60)
+        note_value = note_inside_range_near_root(key_range, root_key)
+        velocity_value = zone_range_midpoint(velocity_range, 100)
+        selector_value = zone_range_midpoint(selector_range, 64)
+        selector_values.add(selector_value)
+        try:
+            zone_audio = audio_cache.get_zone_audio(model, zone)
+            hold_seconds, tail_seconds = zone_loop_runtime_seconds(model, zone, zone_audio)
+        except Exception:
+            hold_seconds, tail_seconds = 1.0, 0.10
+        zones.append({
+            "index": index,
+            "name": zone_simple_value(zone, "Name", "zone {}".format(index)),
+            "note": note_value,
+            "velocity": velocity_value,
+            "selector": selector_value,
+            "hold_seconds": float(hold_seconds),
+            "tail_seconds": float(tail_seconds),
+        })
+
+    grouped = {}
+    for zone_info in zones:
+        key = (zone_info["note"], zone_info["velocity"], zone_info["selector"])
+        grouped.setdefault(key, []).append(zone_info)
+
+    use_selector_cc = len(selector_values) > 1
+    plan = []
+    for trigger_key in sorted(grouped.keys(), key=lambda item: (item[0], item[1], item[2])):
+        members = grouped[trigger_key]
+        repeats = len(members) if rr_enabled else 1
+        hold_seconds = max(member["hold_seconds"] for member in members)
+        tail_seconds = max(member["tail_seconds"] for member in members)
+        for repeat_index in range(repeats):
+            plan.append({
+                "note": int(trigger_key[0]),
+                "velocity": int(trigger_key[1]),
+                "selector": int(trigger_key[2]),
+                "hold_seconds": float(hold_seconds),
+                "tail_seconds": float(tail_seconds),
+                "label": members[min(repeat_index, len(members) - 1)]["name"],
+            })
+
+    return {
+        "tempo_bpm": float(tempo_bpm),
+        "selector_cc": int(selector_cc),
+        "use_selector_cc": bool(use_selector_cc),
+        "round_robin_random": bool(rr_random),
+        "events": plan,
+    }
+
+
+def build_midi_test_events(plan, tempo_bpm=100.0, selector_cc=1, ticks_per_quarter=480):
+    events = []
+    current_delta = 0
+    last_selector = None
+    for event in plan:
+        if event.get("use_selector_cc", False):
+            selector_value = clamp_int(event.get("selector", 64), 0, 127)
+            if selector_value != last_selector:
+                events.append((current_delta, bytes([0xB0, clamp_int(selector_cc, 0, 127), selector_value])))
+                current_delta = 0
+                last_selector = selector_value
+        note_value = clamp_int(event.get("note", 60), 0, 127)
+        velocity_value = clamp_int(event.get("velocity", 100), 1, 127)
+        events.append((current_delta, bytes([0x90, note_value, velocity_value])))
+        hold_ticks = midi_seconds_to_ticks(event.get("hold_seconds", 1.0), tempo_bpm=tempo_bpm, ticks_per_quarter=ticks_per_quarter)
+        events.append((hold_ticks, bytes([0x80, note_value, 0])))
+        current_delta = midi_seconds_to_ticks(event.get("tail_seconds", 0.10), tempo_bpm=tempo_bpm, ticks_per_quarter=ticks_per_quarter)
+    return events
 
     # fallback: raw number = beats
     return parse_number_from_text(text, 1.0)
@@ -2107,6 +2353,27 @@ class AudioAnalysis:
             return int(round(samples_per_beat * value))
 
         return int(round(value))
+
+    @staticmethod
+    def pitch_window_bounds(sample_count, sample_rate, params):
+        sample_count = max(1, int(sample_count))
+        start_offset = AudioAnalysis.parse_number_unit_samples(
+            params.get("param_pitch_window_start_number", DEFAULT_PITCH_WINDOW_START_NUMBER),
+            params.get("param_pitch_window_start_unit", DEFAULT_PITCH_WINDOW_START_UNIT),
+            sample_rate,
+            sample_count,
+        )
+        stop_offset = AudioAnalysis.parse_number_unit_samples(
+            params.get("param_pitch_window_stop_number", DEFAULT_PITCH_WINDOW_STOP_NUMBER),
+            params.get("param_pitch_window_stop_unit", DEFAULT_PITCH_WINDOW_STOP_UNIT),
+            sample_rate,
+            sample_count,
+        )
+        start_index = clamp_int(start_offset, 0, max(0, sample_count - 1))
+        stop_index = clamp_int(stop_offset, start_index + 1, sample_count)
+        if stop_index <= start_index:
+            stop_index = min(sample_count, start_index + 1)
+        return start_index, stop_index
 
     @staticmethod
     def detect_onsets(samples, sample_rate, sensitivity=0.5, min_duration_samples=1000, profile_compression_pct=0.0):
@@ -2447,7 +2714,56 @@ class AudioAnalysis:
         freq = float(sample_rate) / lag
         if not (min_hz <= freq <= max_hz):
             return None
-        return freq
+        return AudioAnalysis.correct_subharmonic_pitch_hz(values, sample_rate, freq, min_hz=min_hz, max_hz=max_hz)
+
+    @staticmethod
+    def spectral_harmonic_score(values, sample_rate, freq_hz, harmonic_count=8):
+        values = np.asarray(values, dtype=np.float64)
+        if len(values) < 64 or freq_hz <= 0:
+            return 0.0
+        magnitudes = np.abs(np.fft.rfft(values))
+        freqs = np.fft.rfftfreq(len(values), 1.0 / float(sample_rate))
+        if len(freqs) == 0:
+            return 0.0
+
+        score = 0.0
+        for harmonic in range(1, int(harmonic_count) + 1):
+            target_hz = float(freq_hz) * harmonic
+            if target_hz >= freqs[-1]:
+                break
+            idx = int(np.searchsorted(freqs, target_hz))
+            lo = max(0, idx - 1)
+            hi = min(len(magnitudes), idx + 2)
+            if hi <= lo:
+                continue
+            score += float(np.max(magnitudes[lo:hi])) / harmonic
+        return score
+
+    @staticmethod
+    def correct_subharmonic_pitch_hz(values, sample_rate, base_freq_hz, min_hz=24.0, max_hz=2000.0):
+        base_freq_hz = float(base_freq_hz)
+        if not (min_hz <= base_freq_hz <= max_hz):
+            return base_freq_hz
+
+        candidates = []
+        for multiplier in (1, 2, 3, 4):
+            candidate_hz = base_freq_hz * multiplier
+            if not (min_hz <= candidate_hz <= max_hz):
+                continue
+            score = AudioAnalysis.spectral_harmonic_score(values, sample_rate, candidate_hz)
+            if multiplier > 1:
+                score *= 0.97 ** (multiplier - 1)
+            candidates.append((score, multiplier, candidate_hz))
+
+        if not candidates:
+            return base_freq_hz
+
+        candidates.sort(reverse=True)
+        best_score, best_multiplier, best_freq_hz = candidates[0]
+        base_score = next((score for score, multiplier, _freq_hz in candidates if multiplier == 1), 0.0)
+        if best_multiplier > 1 and best_score > (base_score * 1.25):
+            return float(best_freq_hz)
+        return base_freq_hz
 
     @staticmethod
     def frequency_to_midi_parts(freq_hz, diapason_hz=440.0):
@@ -2685,13 +3001,11 @@ class AudioAnalysis:
             b = float(values[idx + 1])
             if a <= 0.0 < b:
                 direction = 1
-            elif a >= 0.0 > b:
-                direction = -1
             else:
                 continue
             distance = abs((idx + 0.5) - float(boundary_index))
             magnitude = abs(a) + abs(b)
-            candidate = (distance, magnitude, direction)
+            candidate = (distance, magnitude, direction, idx + 1)
             if best is None or candidate[:2] < best[:2]:
                 best = candidate
 
@@ -2701,7 +3015,21 @@ class AudioAnalysis:
             "distance": float(best[0]),
             "magnitude": float(best[1]),
             "direction": int(best[2]),
+            "boundary_index": int(best[3]),
         }
+
+    @staticmethod
+    def snap_loop_boundaries_to_zero_crossings(values, loop_start, loop_end, search_radius=24):
+        start_cross = AudioAnalysis.nearest_zero_crossing(values, loop_start, search_radius=search_radius)
+        end_cross = AudioAnalysis.nearest_zero_crossing(values, loop_end - 1, search_radius=search_radius)
+        if start_cross is None or end_cross is None:
+            return int(loop_start), int(loop_end)
+
+        snapped_start = int(start_cross["boundary_index"])
+        snapped_end = int(end_cross["boundary_index"])
+        if snapped_end <= snapped_start:
+            return int(loop_start), int(loop_end)
+        return snapped_start, snapped_end
 
     @staticmethod
     def loop_candidate_score(values, loop_start, loop_end, match_window, fade_samples=0, target_start=None, target_end=None, search_half=0):
@@ -2842,6 +3170,12 @@ class AudioAnalysis:
                         "crossfade": int(fade_samples),
                     }
 
+        if best is None:
+            return None
+        snapped_start, snapped_end = AudioAnalysis.snap_loop_boundaries_to_zero_crossings(values, best["start"], best["end"])
+        best["start"] = int(snapped_start)
+        best["end"] = int(snapped_end)
+        best["crossfade"] = int(min(max(0, best.get("crossfade", 0)), max(0, (best["end"] - best["start"]) // 2)))
         return best
 
     @staticmethod
@@ -2982,6 +3316,12 @@ class AudioAnalysis:
                     "crossfade": int(fade_samples),
                 }
 
+        if best is None:
+            return None
+        snapped_start, snapped_end = AudioAnalysis.snap_loop_boundaries_to_zero_crossings(values, best["start"], best["end"])
+        best["start"] = int(snapped_start)
+        best["end"] = int(snapped_end)
+        best["crossfade"] = int(min(max(0, best.get("crossfade", 0)), max(0, (best["end"] - best["start"]) // 2)))
         return best
 
     @staticmethod
@@ -3183,7 +3523,7 @@ class SamplerProcessors:
         source = model.get_zone(zone_index)
         source_audio = audio_cache.get_zone_audio(model, source)
         if len(source_audio.samples) < 2048:
-            log("Gate split: source zone is too short to analyze; skipped.\n")
+            log("Detect split: source zone is too short to analyze; skipped.\n")
             return 0
 
         sensitivity = parse_number_from_text(
@@ -3222,7 +3562,7 @@ class SamplerProcessors:
         )
 
         if not onsets:
-            log("Gate split: no usable level region found inside selected zone.\n")
+            log("Detect split: no usable level region found inside selected zone.\n")
             return 0
 
         bounds = SamplerProcessors.split_boundaries_from_onsets(
@@ -3234,7 +3574,7 @@ class SamplerProcessors:
         )
 
         if len(bounds) <= 1:
-            log("Gate split: all candidate slices were too short after filtering.\n")
+            log("Detect split: all candidate slices were too short after filtering.\n")
             return 0
 
         count = SamplerProcessors.duplicate_source_zone_with_bounds(
@@ -3247,7 +3587,7 @@ class SamplerProcessors:
             "gate",
         )
         log(
-            "Gate split: replaced zone {} with {} zones. threshold={} compression={} hysteresis={} placement={} min_duration={} regions={} include_first={}\n".format(
+            "Detect split: replaced zone {} with {} zones. threshold={} compression={} hysteresis={} placement={} min_duration={} regions={} include_first={}\n".format(
                 zone_index,
                 count,
                 sensitivity,
@@ -3322,10 +3662,10 @@ class SamplerProcessors:
                 total_generated += generated
 
         if zones_changed == 0:
-            log("Gate split: no zone was split.\n")
+            log("Detect split: no zone was split.\n")
         else:
             log(
-                "Gate split summary: split {} original zone(s) into {} generated zone(s).\n".format(
+                "Detect split summary: split {} original zone(s) into {} generated zone(s).\n".format(
                     zones_changed,
                     total_generated,
                 )
@@ -3625,7 +3965,8 @@ class SamplerProcessors:
         for i in range(model.zone_count()):
             zone = model.get_zone(i)
             audio = audio_cache.get_zone_audio(model, zone)
-            freq_hz = AudioAnalysis.detect_pitch_hz(audio.samples, audio.sample_rate)
+            window_start, window_stop = AudioAnalysis.pitch_window_bounds(len(audio.samples), audio.sample_rate, params)
+            freq_hz = AudioAnalysis.detect_pitch_hz(audio.samples[window_start:window_stop], audio.sample_rate)
             if freq_hz is None:
                 log("Pitch detection: could not estimate pitch for {}.\n".format(SamplerProcessors.zone_label(zone, i)))
                 continue
@@ -4056,7 +4397,7 @@ class SamplerProcessors:
         return count
 
     @staticmethod
-    def spread_first_note_interval(model, first_note=0, interval=1, log_func=None):
+    def spread_first_note_interval(model, first_note=0, interval=1, repeat_count=1, log_func=None):
         def log(text):
             if log_func:
                 log_func(text)
@@ -4068,38 +4409,50 @@ class SamplerProcessors:
 
         first_note = clamp_int(parse_number_from_text(first_note, 0), 0, 127)
         interval = max(1, int(round(parse_number_from_text(interval, 1))))
+        repeat_count = max(1, int(round(parse_number_from_text(repeat_count, 1))))
         centers = []
         for idx in range(zone_count):
-            center = clamp_int(first_note + (idx * interval), 0, 127)
+            group_index = idx // repeat_count
+            center = clamp_int(first_note + (group_index * interval), 0, 127)
             centers.append(center)
 
-        count = 0
-        for idx, center in enumerate(centers):
+        unique_centers = []
+        center_to_range = {}
+        for center in centers:
+            if center not in center_to_range:
+                unique_centers.append(center)
+                center_to_range[center] = None
+
+        for idx, center in enumerate(unique_centers):
             if idx == 0:
                 mn = 0
             else:
-                mn = int((centers[idx - 1] + center) // 2) + 1
+                mn = int((unique_centers[idx - 1] + center) // 2) + 1
 
-            if idx == zone_count - 1:
+            if idx == len(unique_centers) - 1:
                 mx = 127
             else:
-                mx = int((center + centers[idx + 1]) // 2)
+                mx = int((center + unique_centers[idx + 1]) // 2)
 
             mn = max(0, min(127, mn))
             mx = max(0, min(127, mx))
             if mn > mx:
                 mn, mx = mx, mn
 
-            vals = {
+            center_to_range[center] = {
                 "min": str(mn),
                 "max": str(mx),
                 "xfade_min": str(mn),
                 "xfade_max": str(mx),
             }
+
+        count = 0
+        for idx, center in enumerate(centers):
+            vals = center_to_range[center]
             model.write_range(model.get_zone(idx), "KeyRange", vals)
             count += 1
 
-        log("First note + interval: updated KeyRange on {} zones from {} every {} semitone(s).\n".format(count, first_note, interval))
+        log("First note + interval: updated KeyRange on {} zones from {} every {} semitone(s), repeating each note {} time(s).\n".format(count, first_note, interval, repeat_count))
         return count
 
     @staticmethod
@@ -4119,6 +4472,7 @@ class SamplerProcessors:
                 model,
                 first_note=params.get("param_key_spread_first_note", "0"),
                 interval="1",
+                repeat_count="1",
                 log_func=log_func,
             )
         if mode == "first note + interval":
@@ -4126,6 +4480,7 @@ class SamplerProcessors:
                 model,
                 first_note=params.get("param_key_spread_first_note", "0"),
                 interval=params.get("param_key_spread_interval", "1"),
+                repeat_count=params.get("param_key_spread_repeat_count", "1"),
                 log_func=log_func,
             )
         if log_func:
@@ -5058,7 +5413,7 @@ class SamplerProcessors:
             return audio_cache
 
         if processing_update.get("split_zones", False):
-            mode = global_values.get("param_split_mode", "gate")
+            mode = global_values.get("param_split_mode", "detect")
 
             if mode == "grid":
                 total_changes += SamplerProcessors.split_all_zones_by_grid(
@@ -5076,7 +5431,7 @@ class SamplerProcessors:
                     log_func=log_func,
                 )
                 model.refresh()
-            elif mode == "gate":
+            elif mode in ("gate", "detect"):
                 total_changes += SamplerProcessors.split_all_zones_by_gate(
                     model,
                     global_values,
@@ -5403,6 +5758,7 @@ class SamplerAdvGui:
         self.dynamic_pitch_env_keys = []
         self.dynamic_sub_osc_keys = []
         self.template_library_var = tk.StringVar(value="")
+        self.template_comments_var = tk.StringVar(value="")
         self.template_library_paths = {}
         self._suspend_template_library_event = False
 
@@ -5424,22 +5780,33 @@ class SamplerAdvGui:
 
         file_frame = ttk.LabelFrame(main, text="ADV file")
         file_frame.pack(fill="x", pady=(0, 8))
+        file_frame.columnconfigure(0, weight=1)
 
         self.path_var = tk.StringVar()
-        ttk.Entry(file_frame, textvariable=self.path_var).pack(side="left", fill="x", expand=True, padx=(8, 4), pady=8)
-        ttk.Button(file_frame, text="New", command=self.new_empty_session).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Open...", command=self.open_file_dialog).pack(side="left", padx=4)
-        ttk.Label(file_frame, text="Template").pack(side="left", padx=(8, 2))
-        self.template_library_combo = ttk.Combobox(file_frame, textvariable=self.template_library_var, state="readonly", width=24, values=[])
-        self.template_library_combo.pack(side="left", padx=(0, 4))
+        file_row = ttk.Frame(file_frame)
+        file_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        file_row.columnconfigure(0, weight=1)
+        ttk.Entry(file_row, textvariable=self.path_var).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(file_row, text="New", command=self.new_empty_session).grid(row=0, column=1, padx=4)
+        ttk.Button(file_row, text="Open...", command=self.open_file_dialog).grid(row=0, column=2, padx=4)
+        ttk.Button(file_row, text="Export MIDI_test", command=self.export_midi_test_dialog).grid(row=0, column=3, padx=4)
+        ttk.Button(file_row, text="Dump JSON", command=self.export_debug_json_dialog).grid(row=0, column=4, padx=4)
+        ttk.Button(file_row, text="Log summary", command=self.log_current_summary).grid(row=0, column=5, padx=4)
+        ttk.Button(file_row, text="Apply", command=self.apply_changes_only).grid(row=0, column=6, padx=4)
+        ttk.Button(file_row, text="Save as...", command=self.save_current_as).grid(row=0, column=7, padx=4)
+        ttk.Button(file_row, text="Overwrite + backup", command=self.overwrite_with_backup).grid(row=0, column=8, padx=(4, 0))
+
+        template_row = ttk.Frame(file_frame)
+        template_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        template_row.columnconfigure(5, weight=1)
+        ttk.Label(template_row, text="Template").grid(row=0, column=0, sticky="w", padx=(0, 2))
+        self.template_library_combo = ttk.Combobox(template_row, textvariable=self.template_library_var, state="readonly", width=24, values=[])
+        self.template_library_combo.grid(row=0, column=1, sticky="w", padx=(0, 4))
         self.template_library_combo.bind("<<ComboboxSelected>>", self.on_template_library_selected)
-        ttk.Button(file_frame, text="Save template", command=self.save_template_dialog).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Load template", command=self.load_template_dialog).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Dump JSON", command=self.export_debug_json_dialog).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Log summary", command=self.log_current_summary).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Apply", command=self.apply_changes_only).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Save as...", command=self.save_current_as).pack(side="left", padx=4)
-        ttk.Button(file_frame, text="Overwrite + backup", command=self.overwrite_with_backup).pack(side="left", padx=(4, 8))
+        ttk.Button(template_row, text="Save template", command=self.save_template_dialog).grid(row=0, column=2, padx=4)
+        ttk.Button(template_row, text="Load template", command=self.load_template_dialog).grid(row=0, column=3, padx=4)
+        ttk.Label(template_row, text="Comments").grid(row=0, column=4, sticky="w", padx=(8, 4))
+        ttk.Entry(template_row, textvariable=self.template_comments_var).grid(row=0, column=5, sticky="ew")
 
         hint = "Drag & drop .adv files here." if DND_AVAILABLE else "Drag & drop unavailable. Install tkinterdnd2 or use Open."
         self.status_var = tk.StringVar(value=hint)
@@ -5535,6 +5902,10 @@ class SamplerAdvGui:
             "param_shift_stop_unit",
             "param_shift_stop_tempo",
             "param_diapason_hz",
+            "param_pitch_window_start_number",
+            "param_pitch_window_start_unit",
+            "param_pitch_window_stop_number",
+            "param_pitch_window_stop_unit",
             "param_sustain_loop_start_pct",
             "param_sustain_loop_start_unit",
             "param_sustain_loop_end_pct",
@@ -5544,6 +5915,7 @@ class SamplerAdvGui:
             "param_sustain_crossfade_policy",
             "param_sustain_crossfade_custom_number",
             "param_sustain_crossfade_custom_unit",
+            "param_release_loop_start_reference",
             "param_release_loop_start_pct",
             "param_release_loop_start_unit",
             "param_release_loop_search_number",
@@ -6073,6 +6445,25 @@ class SamplerAdvGui:
                     widget.grid_remove()
             except Exception:
                 pass
+        self._refresh_pitch_detection_visibility()
+
+    def _refresh_pitch_detection_visibility(self):
+        frame = getattr(self, "pitch_detection_options_frame", None)
+        if frame is None:
+            return
+        try:
+            visible = bool(self.processing_update.get("pitch_detection_root", tk.BooleanVar(value=False)).get()) or bool(
+                self.processing_update.get("pitch_detection_detune", tk.BooleanVar(value=False)).get()
+            )
+        except Exception:
+            visible = False
+        try:
+            if visible:
+                frame.grid()
+            else:
+                frame.grid_remove()
+        except Exception:
+            pass
 
     def _set_split_mode_visibility(self, *_args):
         if not hasattr(self, "split_mode_sections") or not hasattr(self, "split_mode_selector_frame"):
@@ -6083,6 +6474,8 @@ class SamplerAdvGui:
 
         mode_var = self.global_vars.get("param_split_mode")
         mode = mode_var.get() if mode_var is not None else "gate"
+        if mode == "detection":
+            mode = "gate"
 
         if enabled:
             self.split_mode_label.grid()
@@ -6097,9 +6490,7 @@ class SamplerAdvGui:
         if not enabled:
             return
 
-        if mode == "detection":
-            self.split_mode_sections["detection"].grid()
-        elif mode == "gate":
+        if mode in ("detection", "gate", "detect"):
             self.split_mode_sections["gate"].grid()
         elif mode == "grid":
             self.split_mode_sections["grid"].grid()
@@ -6124,9 +6515,9 @@ class SamplerAdvGui:
             "split_zones",
             "Mode",
             "param_split_mode",
-            ["detection", "gate", "grid"],
-            "gate",
-            tooltip="Create several Sampler zones from every existing zone. detection: attack-based start detection. gate: sustained-note level gating. grid: tempo-based positions."
+            ["detect", "grid"],
+            "detect",
+            tooltip="Create several Sampler zones from every existing zone. detect: sustained-note level gating. grid: tempo-based positions."
         )
         zrow += 1
 
@@ -6477,11 +6868,40 @@ class SamplerAdvGui:
 
         ttk.Label(per_zone_box, text="Pitch detection", font=("", 9, "bold")).grid(row=prow, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 3))
         prow += 1
-        self._checkbox_row(per_zone_box, prow, "Detect root note", "pitch_detection_root", tooltip="Estimate the zone pitch and write RootKey.")
+        self._checkbox_row(per_zone_box, prow, "Detect root note", "pitch_detection_root", tooltip="Estimate the zone pitch and write RootKey.", command=self._refresh_pitch_detection_visibility)
         prow += 1
-        self._checkbox_row(per_zone_box, prow, "Detect detune", "pitch_detection_detune", tooltip="Estimate fine pitch and write zone detune in direct signed cents (-50 to +50). Positive values mean the sample is played sharper.")
+        self._checkbox_row(per_zone_box, prow, "Detect detune", "pitch_detection_detune", tooltip="Estimate fine pitch and write zone detune in direct signed cents (-50 to +50). Positive values mean the sample is played sharper.", command=self._refresh_pitch_detection_visibility)
         prow += 1
-        self._param_row(per_zone_box, prow, "Diapason Hz", "param_diapason_hz", DEFAULT_DIAPASON_HZ, tooltip="Reference tuning used to interpret detected pitch. 440 = standard A4. Raise or lower this if recordings are consistently sharp or flat.")
+        pitch_detection_options = ttk.Frame(per_zone_box)
+        pitch_detection_options.grid(row=prow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        pitch_detection_options.columnconfigure(2, weight=1)
+        self.pitch_detection_options_frame = pitch_detection_options
+        subrow = 0
+        self._param_row(pitch_detection_options, subrow, "Diapason Hz", "param_diapason_hz", DEFAULT_DIAPASON_HZ, tooltip="Reference tuning used to interpret detected pitch. 440 = standard A4. Raise or lower this if recordings are consistently sharp or flat.")
+        subrow += 1
+        self._number_unit_row(
+            pitch_detection_options,
+            subrow,
+            "Tune window start",
+            "param_pitch_window_start_number",
+            "param_pitch_window_start_unit",
+            DEFAULT_PITCH_WINDOW_START_NUMBER,
+            DEFAULT_PITCH_WINDOW_START_UNIT,
+            ["samples", "ms", "sec", "%"],
+            tooltip="Start of the audio region used for pitch detection, measured inside each current zone or slice.",
+        )
+        subrow += 1
+        self._number_unit_row(
+            pitch_detection_options,
+            subrow,
+            "Tune window stop",
+            "param_pitch_window_stop_number",
+            "param_pitch_window_stop_unit",
+            DEFAULT_PITCH_WINDOW_STOP_NUMBER,
+            DEFAULT_PITCH_WINDOW_STOP_UNIT,
+            ["samples", "ms", "sec", "%"],
+            tooltip="End of the audio region used for pitch detection, measured inside each current zone or slice.",
+        )
         prow += 1
 
         row += 1
@@ -6510,6 +6930,7 @@ class SamplerAdvGui:
         self.key_spread_first_note_label_var = tk.StringVar(value=midi_key_to_note_label(0))
         ttk.Label(spread_interval_row, textvariable=self.key_spread_first_note_label_var).grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
         self._param_row(spread_interval_row, 1, "Interval", "param_key_spread_interval", "1", tooltip="Distance in semitones between successive generated note centers.")
+        self._param_row(spread_interval_row, 2, "n times", "param_key_spread_repeat_count", "1", tooltip="Repeat each generated note center this many consecutive zones before moving by the interval.")
         try:
             self.global_vars["param_key_spread_first_note"].trace_add("write", lambda *_args: self.update_key_spread_first_note_label())
         except Exception:
@@ -6779,6 +7200,7 @@ class SamplerAdvGui:
     def collect_template(self):
         return {
             "version": "1.6.0",
+            "comments": self.template_comments_var.get(),
             "global_values": {k: v.get() for k, v in self.global_vars.items()},
             "global_update": {k: v.get() for k, v in self.global_update.items()},
             "processing_update": {k: v.get() for k, v in self.processing_update.items()},
@@ -6787,6 +7209,7 @@ class SamplerAdvGui:
     def apply_default_global_baseline(self):
         if not DEFAULT_TOOL_TEMPLATE:
             return
+        self.template_comments_var.set(str(DEFAULT_TOOL_TEMPLATE.get("comments", "")))
         for store_name, store in [
             ("global_values", self.global_vars),
             ("global_update", self.global_update),
@@ -6800,10 +7223,14 @@ class SamplerAdvGui:
                     store[k].set(val)
                 else:
                     store[k].set(bool(val))
-        if "param_split_mode" in self.global_vars and self.global_vars["param_split_mode"].get() == "off":
-            self.global_vars["param_split_mode"].set("gate")
-            if "split_zones" in self.processing_update:
-                self.processing_update["split_zones"].set(False)
+        if "param_split_mode" in self.global_vars:
+            split_mode = self.global_vars["param_split_mode"].get()
+            if split_mode == "off":
+                self.global_vars["param_split_mode"].set("detect")
+                if "split_zones" in self.processing_update:
+                    self.processing_update["split_zones"].set(False)
+            elif split_mode in ("detection", "gate"):
+                self.global_vars["param_split_mode"].set("detect")
         self._set_split_mode_visibility()
         self._refresh_visibility_rules()
         self.schedule_waveform_refresh()
@@ -6860,6 +7287,7 @@ class SamplerAdvGui:
             self.show_error("Could not load template", e)
 
     def apply_template(self, data):
+        self.template_comments_var.set(str(data.get("comments", "")))
         for store_name, store in [
             ("global_values", self.global_vars),
         ]:
@@ -6877,10 +7305,14 @@ class SamplerAdvGui:
                 if k in store:
                     store[k].set(bool(val))
 
-        if "param_split_mode" in self.global_vars and self.global_vars["param_split_mode"].get() == "off":
-            self.global_vars["param_split_mode"].set("gate")
-            if "split_zones" in self.processing_update:
-                self.processing_update["split_zones"].set(False)
+        if "param_split_mode" in self.global_vars:
+            split_mode = self.global_vars["param_split_mode"].get()
+            if split_mode == "off":
+                self.global_vars["param_split_mode"].set("detect")
+                if "split_zones" in self.processing_update:
+                    self.processing_update["split_zones"].set(False)
+            elif split_mode in ("detection", "gate"):
+                self.global_vars["param_split_mode"].set("detect")
 
         self._set_split_mode_visibility()
         self._refresh_visibility_rules()
@@ -6953,6 +7385,43 @@ class SamplerAdvGui:
             self.log_insert("Debug JSON exported: {}\n".format(path))
         except Exception as e:
             self.show_error("Could not export debug JSON", e)
+
+    def export_midi_test_dialog(self):
+        if self.model is None:
+            messagebox.showwarning("No file", "Open an .adv first.")
+            return
+
+        default_name = "MIDI_test.mid"
+        if self.adv_path is not None:
+            default_name = self.adv_path.stem + "_MIDI_test.mid"
+
+        path = filedialog.asksaveasfilename(
+            title="Export MIDI_test",
+            initialfile=default_name,
+            defaultextension=".mid",
+            filetypes=[("MIDI file", "*.mid"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            plan_info = build_midi_test_plan(self.model, self.waveform_cache, tempo_bpm=100.0, selector_cc=1)
+            plan_events = [dict(item, use_selector_cc=plan_info["use_selector_cc"]) for item in plan_info["events"]]
+            midi_events = build_midi_test_events(plan_events, tempo_bpm=plan_info["tempo_bpm"], selector_cc=plan_info["selector_cc"])
+            write_midi_file(path, midi_events, tempo_bpm=plan_info["tempo_bpm"], track_name="MIDI_test")
+            self.log_insert(
+                "MIDI_test exported: {} (tempo={} BPM, selector_cc={}, selector_used={}, events={})\n".format(
+                    path,
+                    int(plan_info["tempo_bpm"]),
+                    plan_info["selector_cc"],
+                    plan_info["use_selector_cc"],
+                    len(plan_info["events"]),
+                )
+            )
+            if plan_info["round_robin_random"]:
+                self.log_insert("Warning: round robin mode is random, so identical trigger repeats cannot guarantee hearing each layer exactly once.\n")
+        except Exception as e:
+            self.show_error("Could not export MIDI_test", e)
 
     # -------------------------------------------------------------------------
     # File loading / saving
@@ -7520,10 +7989,10 @@ class SamplerAdvGui:
 
     def current_waveform_overlay_flags(self):
         split_enabled = bool(self.processing_update.get("split_zones", tk.BooleanVar(value=False)).get())
-        split_mode = self.global_vars.get("param_split_mode", tk.StringVar(value="gate")).get()
+        split_mode = self.global_vars.get("param_split_mode", tk.StringVar(value="detect")).get()
         return {
             "split_detection": split_enabled and split_mode == "detection",
-            "split_gate": split_enabled and split_mode == "gate",
+            "split_gate": split_enabled and split_mode in ("gate", "detect"),
             "split_grid": split_enabled and split_mode == "grid",
             "refine": bool(self.processing_update.get("start_end_refine", tk.BooleanVar(value=False)).get()),
             "sustain_loop": bool(self.processing_update.get("loop_detection", tk.BooleanVar(value=False)).get()),
@@ -7842,7 +8311,14 @@ class SamplerAdvGui:
                 slice_samples = samples[slice_start:slice_end]
                 if len(slice_samples) < max(256, sample_rate // 40):
                     continue
-                freq_hz = AudioAnalysis.detect_pitch_hz(slice_samples, sample_rate)
+                params = {
+                    "param_pitch_window_start_number": self.global_vars.get("param_pitch_window_start_number", tk.StringVar(value=DEFAULT_PITCH_WINDOW_START_NUMBER)).get(),
+                    "param_pitch_window_start_unit": self.global_vars.get("param_pitch_window_start_unit", tk.StringVar(value=DEFAULT_PITCH_WINDOW_START_UNIT)).get(),
+                    "param_pitch_window_stop_number": self.global_vars.get("param_pitch_window_stop_number", tk.StringVar(value=DEFAULT_PITCH_WINDOW_STOP_NUMBER)).get(),
+                    "param_pitch_window_stop_unit": self.global_vars.get("param_pitch_window_stop_unit", tk.StringVar(value=DEFAULT_PITCH_WINDOW_STOP_UNIT)).get(),
+                }
+                window_start, window_stop = AudioAnalysis.pitch_window_bounds(len(slice_samples), sample_rate, params)
+                freq_hz = AudioAnalysis.detect_pitch_hz(slice_samples[window_start:window_stop], sample_rate)
                 if freq_hz is None:
                     continue
                 _midi_float, detected_root, detected_cents = AudioAnalysis.frequency_to_midi_parts(freq_hz, diapason_hz=diapason_hz)
@@ -7914,6 +8390,25 @@ class SamplerAdvGui:
             top,
             end_x,
             bottom,
+            fill=fill,
+            outline=outline,
+            stipple=stipple,
+        )
+        return start_x, end_x
+
+    def draw_waveform_triangle(self, left, top, bottom, plot_width, sample_count, start_sample, end_sample, fill, direction="up", outline="", stipple="gray25"):
+        start_x = self.waveform_sample_to_x(start_sample, sample_count, left, plot_width)
+        end_x = self.waveform_sample_to_x(end_sample, sample_count, left, plot_width)
+        if end_x <= start_x:
+            end_x = start_x + 1
+
+        if str(direction).strip().lower() == "down":
+            points = [start_x, top, end_x, top, end_x, bottom]
+        else:
+            points = [start_x, bottom, end_x, top, end_x, bottom]
+
+        self.waveform_canvas.create_polygon(
+            points,
             fill=fill,
             outline=outline,
             stipple=stipple,
@@ -8252,46 +8747,86 @@ class SamplerAdvGui:
                     if loop_info is not None:
                         predicted_sustain_loops.append((slice_start, slice_end, loop_info))
             else:
-                loop_info = self.current_editor_loop_preview("sustain", zone_audio)
+                loop_info = self.get_cached_waveform_analysis(
+                    (
+                        "loop",
+                        "sustain",
+                        zone_cache_key,
+                        0,
+                        len(samples),
+                        self.global_vars.get("param_sustain_loop_start_pct", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_sustain_loop_end_pct", tk.StringVar(value="75")).get(),
+                        self.global_vars.get("param_sustain_loop_search_number", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_sustain_loop_search_unit", tk.StringVar(value="%")).get(),
+                        self.global_vars.get("param_sustain_crossfade_policy", tk.StringVar(value="No fade")).get(),
+                        self.global_vars.get("param_sustain_crossfade_custom_number", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_sustain_crossfade_custom_unit", tk.StringVar(value="%")).get(),
+                        bool(self.processing_update.get("loop_detune_detection", tk.BooleanVar(value=False)).get()),
+                    ),
+                    lambda: self.predict_loop_preview_for_slice(samples, zone_audio.sample_rate, "sustain"),
+                )
                 if loop_info is not None:
-                    predicted_sustain_loops.append(loop_info)
+                    predicted_sustain_loops.append((0, len(samples), loop_info))
 
         if overlay_flags["release_loop"] or overlay_flags["release_crossfade"]:
             if use_predicted_slice_loops:
-                for slice_start, slice_end in slice_bounds:
+                for idx, (slice_start, slice_end) in enumerate(slice_bounds):
                     slice_samples = samples[slice_start:slice_end]
                     if len(slice_samples) == 0:
                         continue
-                        sustain_loop_info = None
-                        if idx < len(predicted_sustain_loops):
-                            sustain_entry = predicted_sustain_loops[idx]
-                            if sustain_entry[0] == slice_start and sustain_entry[1] == slice_end:
-                                sustain_loop_info = sustain_entry[2]
-                        loop_info = self.get_cached_waveform_analysis(
-                            (
-                                "loop",
-                                "release",
-                                zone_cache_key,
-                                int(slice_start),
-                                int(slice_end),
-                                self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
-                                self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
-                                self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
-                                self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
-                                self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
-                                self.global_vars.get("param_release_crossfade_custom_number", tk.StringVar(value="25")).get(),
-                                self.global_vars.get("param_release_crossfade_custom_unit", tk.StringVar(value="%")).get(),
-                                bool(self.processing_update.get("release_loop_detune_detection", tk.BooleanVar(value=False)).get()),
-                                int(sustain_loop_info.get("end", 0)) if sustain_loop_info is not None else -1,
-                            ),
-                            lambda slice_samples=slice_samples, sustain_loop_info=sustain_loop_info: self.predict_loop_preview_for_slice(slice_samples, zone_audio.sample_rate, "release", sustain_loop_info=sustain_loop_info),
-                        )
-                        if loop_info is not None:
-                            predicted_release_loops.append((slice_start, slice_end, loop_info))
-                else:
-                    loop_info = self.current_editor_loop_preview("release", zone_audio)
+                    sustain_loop_info = None
+                    if idx < len(predicted_sustain_loops):
+                        sustain_entry = predicted_sustain_loops[idx]
+                        if sustain_entry[0] == slice_start and sustain_entry[1] == slice_end:
+                            sustain_loop_info = sustain_entry[2]
+                    loop_info = self.get_cached_waveform_analysis(
+                        (
+                            "loop",
+                            "release",
+                            zone_cache_key,
+                            int(slice_start),
+                            int(slice_end),
+                            self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
+                            self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
+                            self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
+                            self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
+                            self.global_vars.get("param_release_crossfade_custom_number", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_release_crossfade_custom_unit", tk.StringVar(value="%")).get(),
+                            bool(self.processing_update.get("release_loop_detune_detection", tk.BooleanVar(value=False)).get()),
+                            int(sustain_loop_info.get("end", 0)) if sustain_loop_info is not None else -1,
+                        ),
+                        lambda slice_samples=slice_samples, sustain_loop_info=sustain_loop_info: self.predict_loop_preview_for_slice(slice_samples, zone_audio.sample_rate, "release", sustain_loop_info=sustain_loop_info),
+                    )
                     if loop_info is not None:
-                        predicted_release_loops.append(loop_info)
+                        predicted_release_loops.append((slice_start, slice_end, loop_info))
+            else:
+                sustain_loop_info = None
+                if predicted_sustain_loops:
+                    sustain_entry = predicted_sustain_loops[0]
+                    if isinstance(sustain_entry, tuple) and len(sustain_entry) == 3:
+                        sustain_loop_info = sustain_entry[2]
+                loop_info = self.get_cached_waveform_analysis(
+                    (
+                        "loop",
+                        "release",
+                        zone_cache_key,
+                        0,
+                        len(samples),
+                        self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
+                        self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
+                        self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
+                        self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
+                        self.global_vars.get("param_release_crossfade_custom_number", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_release_crossfade_custom_unit", tk.StringVar(value="%")).get(),
+                        bool(self.processing_update.get("release_loop_detune_detection", tk.BooleanVar(value=False)).get()),
+                        int(sustain_loop_info.get("end", 0)) if sustain_loop_info is not None else -1,
+                    ),
+                    lambda sustain_loop_info=sustain_loop_info: self.predict_loop_preview_for_slice(samples, zone_audio.sample_rate, "release", sustain_loop_info=sustain_loop_info),
+                )
+                if loop_info is not None:
+                    predicted_release_loops.append((0, len(samples), loop_info))
 
         if overlay_flags["sustain_loop"] or overlay_flags["release_loop"]:
             sustain_lane_top = lane_bottom - lane_height
@@ -8342,13 +8877,13 @@ class SamplerAdvGui:
                 rel_loop_start = zone_audio.zone_start + slice_start + int(loop_vals["start"])
                 rel_loop_end = zone_audio.zone_start + slice_start + int(loop_vals["end"])
                 # Show the overlap span both before loop end and before loop start.
-                for lane_top, lane_bottom_local, cf_start, cf_end in (
-                    (top_a, bottom_a, rel_loop_end - crossfade, rel_loop_end),
-                    (top_b, bottom_b, rel_loop_start - crossfade, rel_loop_start),
+                for lane_top, lane_bottom_local, cf_start, cf_end, direction in (
+                    (top_a, bottom_a, rel_loop_end - crossfade, rel_loop_end, "up"),
+                    (top_b, bottom_b, rel_loop_start - crossfade, rel_loop_start, "up"),
                 ):
                     cf_start = max(0, min(cf_start, len(full_samples) - 1))
                     cf_end = max(cf_start + 1, min(cf_end, len(full_samples)))
-                    self.draw_waveform_range(
+                    self.draw_waveform_triangle(
                         left,
                         lane_top,
                         lane_bottom_local,
@@ -8357,6 +8892,7 @@ class SamplerAdvGui:
                         cf_start - view_start,
                         cf_end - view_start,
                         fill=fill,
+                        direction=direction,
                         outline="",
                         stipple="gray25",
                     )
@@ -8605,7 +9141,9 @@ class SamplerAdvGui:
             )
             return
         groups = []
-        for base_path in ("Lfo", "AuxLfos.0", "AuxLfos.1"):
+        for base_path in ("Lfo", "AuxLfos.0", "AuxLfos.0/Slot/Value/SimplerAuxLfo", "AuxLfos.1", "AuxLfos.1/Slot/Value/SimplerAuxLfo"):
+            if base_path in OPTIONAL_GENERIC_MANUAL_BASES and not generic_manual_group_has_existing_content(self.model.root, base_path):
+                continue
             params = merged_template_manual_paths(self.model.root, base_path)
             if params:
                 groups.append((base_path, "manual", "param_lfo_manual::", params))
@@ -8624,6 +9162,8 @@ class SamplerAdvGui:
             "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst",
             "AuxLfos.1/Slot/Value/SimplerAuxLfo/ModDst",
         ):
+            if base_path in OPTIONAL_GENERIC_VALUE_BASES and not generic_value_group_has_existing_content(self.model.root, base_path):
+                continue
             params = merged_template_value_paths(self.model.root, base_path)
             if params:
                 groups.append((base_path, "value", "param_lfo_value::", params))
