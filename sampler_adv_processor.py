@@ -2778,7 +2778,7 @@ class AudioAnalysis:
         return window[:max_length]
 
     @staticmethod
-    def detect_pitch_hz(samples, sample_rate, min_hz=24.0, max_hz=2000.0):
+    def detect_pitch_hz(samples, sample_rate, min_hz=24.0, max_hz=2000.0, harmonic_correction="standard"):
         samples = AudioAnalysis.select_pitch_window(samples, sample_rate)
         if len(samples) < max(2048, sample_rate // 20):
             return None
@@ -2820,7 +2820,14 @@ class AudioAnalysis:
         freq = float(sample_rate) / lag
         if not (min_hz <= freq <= max_hz):
             return None
-        return AudioAnalysis.correct_subharmonic_pitch_hz(values, sample_rate, freq, min_hz=min_hz, max_hz=max_hz)
+        return AudioAnalysis.correct_subharmonic_pitch_hz(
+            values,
+            sample_rate,
+            freq,
+            min_hz=min_hz,
+            max_hz=max_hz,
+            mode=harmonic_correction,
+        )
 
     @staticmethod
     def spectral_harmonic_score(values, sample_rate, freq_hz, harmonic_count=8):
@@ -2846,13 +2853,17 @@ class AudioAnalysis:
         return score
 
     @staticmethod
-    def correct_subharmonic_pitch_hz(values, sample_rate, base_freq_hz, min_hz=24.0, max_hz=2000.0):
+    def correct_subharmonic_pitch_hz(values, sample_rate, base_freq_hz, min_hz=24.0, max_hz=2000.0, mode="standard"):
         base_freq_hz = float(base_freq_hz)
         if not (min_hz <= base_freq_hz <= max_hz):
             return base_freq_hz
 
+        mode = str(mode or "standard").strip().lower()
+        max_multiplier = 8 if mode in ("extended", "sustained", "wide") else 4
+        score_threshold = 1.60
+
         candidates = []
-        for multiplier in (1, 2, 3, 4):
+        for multiplier in range(1, max_multiplier + 1):
             candidate_hz = base_freq_hz * multiplier
             if not (min_hz <= candidate_hz <= max_hz):
                 continue
@@ -2867,7 +2878,7 @@ class AudioAnalysis:
         candidates.sort(reverse=True)
         best_score, best_multiplier, best_freq_hz = candidates[0]
         base_score = next((score for score, multiplier, _freq_hz in candidates if multiplier == 1), 0.0)
-        if best_multiplier > 1 and best_score > (base_score * 1.25):
+        if best_multiplier > 1 and best_score > (base_score * score_threshold):
             return float(best_freq_hz)
         return base_freq_hz
 
@@ -4066,6 +4077,11 @@ class SamplerProcessors:
         if not detect_root and not detect_detune:
             return 0
         diapason_hz = parse_number_from_text(params.get("param_diapason_hz", DEFAULT_DIAPASON_HZ), 440.0)
+        harmonic_correction = (
+            "extended"
+            if bool(params.get("param_pitch_extended_harmonic_correction", False))
+            else "standard"
+        )
 
         updated = 0
 
@@ -4073,7 +4089,11 @@ class SamplerProcessors:
             zone = model.get_zone(i)
             audio = audio_cache.get_zone_audio(model, zone)
             window_start, window_stop = AudioAnalysis.pitch_window_bounds(len(audio.samples), audio.sample_rate, params)
-            freq_hz = AudioAnalysis.detect_pitch_hz(audio.samples[window_start:window_stop], audio.sample_rate)
+            freq_hz = AudioAnalysis.detect_pitch_hz(
+                audio.samples[window_start:window_stop],
+                audio.sample_rate,
+                harmonic_correction=harmonic_correction,
+            )
             if freq_hz is None:
                 log("Pitch detection: could not estimate pitch for {}.\n".format(SamplerProcessors.zone_label(zone, i)))
                 continue
@@ -6118,6 +6138,7 @@ class SamplerAdvGui:
             "param_pitch_window_start_unit",
             "param_pitch_window_stop_number",
             "param_pitch_window_stop_unit",
+            "param_pitch_extended_harmonic_correction",
             "param_sustain_loop_start_pct",
             "param_sustain_loop_start_unit",
             "param_sustain_loop_end_pct",
@@ -7200,6 +7221,15 @@ class SamplerAdvGui:
             DEFAULT_PITCH_WINDOW_STOP_UNIT,
             ["samples", "ms", "sec", "%"],
             tooltip="End of the audio region used for pitch detection, measured inside each current zone or slice.",
+        )
+        subrow += 1
+        self._bool_param_row(
+            pitch_detection_options,
+            subrow,
+            "Extended harmonic correction",
+            "param_pitch_extended_harmonic_correction",
+            False,
+            tooltip="Allows sustained pitched sounds with weak fundamentals to correct to higher harmonics. Leave off for uncertain, percussive, or inharmonic sounds.",
         )
         prow += 1
 
@@ -8763,7 +8793,16 @@ class SamplerAdvGui:
                     "param_pitch_window_stop_unit": self.global_vars.get("param_pitch_window_stop_unit", tk.StringVar(value=DEFAULT_PITCH_WINDOW_STOP_UNIT)).get(),
                 }
                 window_start, window_stop = AudioAnalysis.pitch_window_bounds(len(slice_samples), sample_rate, params)
-                freq_hz = AudioAnalysis.detect_pitch_hz(slice_samples[window_start:window_stop], sample_rate)
+                harmonic_correction = (
+                    "extended"
+                    if bool(self.global_vars.get("param_pitch_extended_harmonic_correction", tk.BooleanVar(value=False)).get())
+                    else "standard"
+                )
+                freq_hz = AudioAnalysis.detect_pitch_hz(
+                    slice_samples[window_start:window_stop],
+                    sample_rate,
+                    harmonic_correction=harmonic_correction,
+                )
                 if freq_hz is None:
                     continue
                 _midi_float, detected_root, detected_cents = AudioAnalysis.frequency_to_midi_parts(freq_hz, diapason_hz=diapason_hz)

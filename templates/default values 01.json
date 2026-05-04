@@ -49,6 +49,7 @@
     "param_release_loop_search_unit": "%",
     "param_release_loop_mode": "loop",
     "param_diapason_hz": "440",
+    "param_pitch_extended_harmonic_correction": false,
     "param_key_spread_mode": "around root key",
     "param_key_spread_min": "0",
     "param_key_spread_max": "127",

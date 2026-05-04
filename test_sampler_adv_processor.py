@@ -1106,7 +1106,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         captured = {}
         original = MODULE.AudioAnalysis.detect_pitch_hz
 
-        def fake_detect_pitch_hz(window_samples, sample_rate, min_hz=24.0, max_hz=2000.0):
+        def fake_detect_pitch_hz(window_samples, sample_rate, min_hz=24.0, max_hz=2000.0, **_kwargs):
             captured["samples"] = MODULE.np.asarray(window_samples).copy()
             captured["sample_rate"] = sample_rate
             return 440.0
@@ -1178,6 +1178,36 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 errors.append(midi_float - (stored_root + (stored_detune / 100.0)))
             max_abs_errors.append(max(abs(err) for err in errors))
         self.assertLess(max(max_abs_errors), 1.25)
+
+    def test_detect_pitch_hz_sustained_validated_examples_avoid_octave_outliers(self):
+        corpus = [
+            ("cello arco vib backForthLoop MS 01.adv", "standard", None),
+            ("shruti box looping MS 01.adv", "extended", {127}),
+        ]
+        project_root = Path(__file__).with_name("testPresets01 Project") / "adv presets"
+        cache = MODULE.ZoneAudioCache()
+        for filename, correction, skip_roots in corpus:
+            with self.subTest(filename=filename, correction=correction):
+                model = MODULE.SamplerAdvModel(MODULE.AdvCodec.load(project_root / filename), source_path=project_root / filename)
+                errors = []
+                for index in range(model.zone_count()):
+                    zone = model.get_zone(index)
+                    stored_root = int(MODULE.parse_number_from_text(MODULE.get_value(zone, "RootKey", "0"), 0))
+                    if skip_roots and stored_root in skip_roots:
+                        continue
+                    audio = cache.get_zone_audio(model, zone)
+                    hz = MODULE.AudioAnalysis.detect_pitch_hz(
+                        audio.samples,
+                        audio.sample_rate,
+                        harmonic_correction=correction,
+                    )
+                    if hz is None:
+                        continue
+                    midi_float, _root, _cents = MODULE.AudioAnalysis.frequency_to_midi_parts(hz, diapason_hz=440.0)
+                    stored_detune = float(MODULE.parse_number_from_text(MODULE.get_value(zone, "Detune", "0"), 0))
+                    errors.append(midi_float - (stored_root + (stored_detune / 100.0)))
+                self.assertTrue(errors)
+                self.assertLess(max(abs(err) for err in errors), 0.75)
 
     def test_find_loop_points_snaps_flute_zone_to_zero_crossings(self):
         adv_path = Path(__file__).with_name("testPresets01 Project") / "adv presets" / "acoustic wood recorder flute 01.adv"

@@ -54,6 +54,7 @@
     "param_pitch_window_start_unit": "ms",
     "param_pitch_window_stop_number": "100",
     "param_pitch_window_stop_unit": "%",
+    "param_pitch_extended_harmonic_correction": false,
     "param_key_spread_mode": "around root key",
     "param_key_spread_min": "0",
     "param_key_spread_max": "127",
