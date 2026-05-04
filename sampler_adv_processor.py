@@ -120,15 +120,16 @@ DEFAULT_PITCH_WINDOW_STOP_UNIT = "%"
 WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS = 2.0
 
 SUSTAIN_MODE_VALUES = {
-    "off": "0",
+    "on": "0",
     "loop": "1",
     "back-and-forth": "2",
 }
 
 RELEASE_MODE_VALUES = {
-    "off": "0",
-    "loop": "3",
+    "on": "0",
+    "loop": "1",
     "back-and-forth": "2",
+    "off": "3",
 }
 
 LEGACY_MODE_LABEL_ALIASES = {
@@ -136,8 +137,7 @@ LEGACY_MODE_LABEL_ALIASES = {
     "No": "off",
     "forward": "loop",
     "Forward": "loop",
-    "on": "loop",
-    "On": "loop",
+    "On": "on",
     "back and forth": "back-and-forth",
     "back-and-forth": "back-and-forth",
     "Back-and-forth": "back-and-forth",
@@ -953,6 +953,30 @@ def merged_template_value_paths(root, base_path):
     return merged
 
 
+def manual_parameter_kind_for_path(path):
+    path = str(path or "")
+    base_path = matching_template_base(path, MANUAL_TEMPLATE_SPECS)
+    if base_path is None:
+        return None
+    relative_path = path[len(base_path):].lstrip("/")
+    for spec_path, kind, _default, _range_min, _range_max, _include_modulation in MANUAL_TEMPLATE_SPECS.get(base_path, []):
+        if spec_path == relative_path:
+            return kind
+    return None
+
+
+def value_looks_bool(value):
+    if isinstance(value, bool):
+        return True
+    return str(value).strip().lower() in ("true", "false")
+
+
+def bool_from_value(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() == "true"
+
+
 def float_to_text(value):
     if isinstance(value, str):
         return value
@@ -998,14 +1022,14 @@ def loop_mode_value_from_label(prefix, label):
         return raw
     normalized = normalize_mode_label(raw)
     values = loop_mode_values_for_prefix(prefix)
+    if normalized == "off" and "off" not in values and "on" in values:
+        return values["on"]
     return values.get(normalized, raw)
 
 
 def loop_mode_label_from_value(prefix, value):
     raw = str(value or "").strip()
     values = loop_mode_values_for_prefix(prefix)
-    if raw == "1" and str(prefix).strip().lower() == "release":
-        return "loop"
     return next((label for label, mapped in values.items() if mapped == raw), raw)
 
 
@@ -1022,6 +1046,25 @@ def migrate_loop_write_flags(data, processing_update):
         for key in write_keys:
             if key in processing_update:
                 processing_update[key].set(True)
+
+
+def migrate_generic_panel_write_flags(data, global_update):
+    source = data.get("global_update", {}) if isinstance(data, dict) else {}
+    legacy_panel_prefixes = (
+        ("generic_lfo", ("param_lfo_manual::", "param_lfo_value::")),
+        ("generic_filter", ("param_filter_manual::", "param_filter_value::")),
+        ("generic_aux_env", ("param_aux_env_manual::", "param_aux_env_value::")),
+        ("generic_pitch_env", ("param_pitch_env_manual::",)),
+        ("generic_sub_osc", ("param_sub_osc_manual::",)),
+    )
+    for legacy_key, prefixes in legacy_panel_prefixes:
+        if not source.get(legacy_key, False):
+            continue
+        if any(any(str(key).startswith(prefix) for prefix in prefixes) for key in source):
+            continue
+        for key, var in global_update.items():
+            if any(str(key).startswith(prefix) for prefix in prefixes):
+                var.set(True)
 
 
 def list_value_parameter_paths(root, base_path):
@@ -1783,7 +1826,7 @@ class SamplerAdvModel:
                 log("Updated RoundRobinRandomSeed: {}\n".format(val))
 
         if global_update.get("default_loop_mode", False):
-            raw_mode = str(global_values.get("param_default_loop_mode", "on")).strip()
+            raw_mode = str(global_values.get("param_default_loop_mode", "loop")).strip()
             val = loop_mode_value_from_label("sustain", raw_mode)
             int(val)
             updated = 0
@@ -1797,7 +1840,7 @@ class SamplerAdvModel:
             log("Updated SustainLoop mode on {} zone(s): {}\n".format(updated, val))
 
         if global_update.get("default_release_loop_mode", False):
-            raw_mode = str(global_values.get("param_default_release_loop_mode", "on")).strip()
+            raw_mode = str(global_values.get("param_default_release_loop_mode", "loop")).strip()
             val = loop_mode_value_from_label("release", raw_mode)
             int(val)
             updated = 0
@@ -1831,11 +1874,13 @@ class SamplerAdvModel:
                 set_manual_value_by_path(self.root, path, float_to_text(value))
             log("Updated amplitude envelope slopes.\n")
 
-        if global_update.get("generic_lfo", False):
+        if any(global_update.get(key, False) for key in global_values if str(key).startswith(("param_lfo_manual::", "param_lfo_value::"))):
             updated = 0
             for key, value in global_values.items():
                 if not str(key).startswith("param_lfo_manual::"):
                     if not str(key).startswith("param_lfo_value::"):
+                        continue
+                    if not global_update.get(key, False):
                         continue
                     path = str(key).split("::", 1)[1]
                     base_path = matching_template_base(path, VALUE_TEMPLATE_SPECS)
@@ -1844,9 +1889,13 @@ class SamplerAdvModel:
                     enum_id = enum_id_for_path(path)
                     if enum_id and enum_id != "__hidden__":
                         value = enum_value_from_label(enum_id, value)
+                    elif isinstance(value, bool):
+                        value = "true" if value else "false"
                     ensure_direct_value_path(self.root, path)
                     set_value_by_path(self.root, path, value)
                     updated += 1
+                    continue
+                if not global_update.get(key, False):
                     continue
                 path = str(key).split("::", 1)[1]
                 base_path = matching_template_base(path, MANUAL_TEMPLATE_SPECS)
@@ -1855,80 +1904,106 @@ class SamplerAdvModel:
                 enum_id = enum_id_for_path(path)
                 if enum_id and enum_id != "__hidden__":
                     value = enum_value_from_label(enum_id, value)
+                elif isinstance(value, bool):
+                    value = "true" if value else "false"
                 ensure_manual_value_path(self.root, path)
                 set_manual_value_by_path(self.root, path, value)
                 updated += 1
             log("Updated {} generic modulation parameter(s).\n".format(updated))
 
-        if global_update.get("generic_filter", False):
+        if any(global_update.get(key, False) for key in global_values if str(key).startswith(("param_filter_manual::", "param_filter_value::"))):
             updated = 0
             for key, value in global_values.items():
                 if not str(key).startswith("param_filter_manual::"):
                     if not str(key).startswith("param_filter_value::"):
                         continue
-                    path = str(key).split("::", 1)[1]
-                    enum_id = enum_id_for_path(path)
-                    if enum_id and enum_id != "__hidden__":
-                        value = enum_value_from_label(enum_id, value)
-                    ensure_direct_value_path(self.root, path)
-                    set_value_by_path(self.root, path, value)
-                    updated += 1
-                    continue
-                path = str(key).split("::", 1)[1]
-                enum_id = enum_id_for_path(path)
-                if enum_id and enum_id != "__hidden__":
-                    value = enum_value_from_label(enum_id, value)
-                ensure_manual_value_path(self.root, path)
-                set_manual_value_by_path(self.root, path, value)
-                updated += 1
-            log("Updated {} generic filter parameter(s).\n".format(updated))
-
-        if global_update.get("generic_aux_env", False):
-            updated = 0
-            for key, value in global_values.items():
-                if not str(key).startswith("param_aux_env_manual::"):
-                    if not str(key).startswith("param_aux_env_value::"):
+                    if not global_update.get(key, False):
                         continue
                     path = str(key).split("::", 1)[1]
                     enum_id = enum_id_for_path(path)
                     if enum_id and enum_id != "__hidden__":
                         value = enum_value_from_label(enum_id, value)
+                    elif isinstance(value, bool):
+                        value = "true" if value else "false"
                     ensure_direct_value_path(self.root, path)
                     set_value_by_path(self.root, path, value)
                     updated += 1
+                    continue
+                if not global_update.get(key, False):
                     continue
                 path = str(key).split("::", 1)[1]
                 enum_id = enum_id_for_path(path)
                 if enum_id and enum_id != "__hidden__":
                     value = enum_value_from_label(enum_id, value)
+                elif isinstance(value, bool):
+                    value = "true" if value else "false"
+                ensure_manual_value_path(self.root, path)
+                set_manual_value_by_path(self.root, path, value)
+                updated += 1
+            log("Updated {} generic filter parameter(s).\n".format(updated))
+
+        if any(global_update.get(key, False) for key in global_values if str(key).startswith(("param_aux_env_manual::", "param_aux_env_value::"))):
+            updated = 0
+            for key, value in global_values.items():
+                if not str(key).startswith("param_aux_env_manual::"):
+                    if not str(key).startswith("param_aux_env_value::"):
+                        continue
+                    if not global_update.get(key, False):
+                        continue
+                    path = str(key).split("::", 1)[1]
+                    enum_id = enum_id_for_path(path)
+                    if enum_id and enum_id != "__hidden__":
+                        value = enum_value_from_label(enum_id, value)
+                    elif isinstance(value, bool):
+                        value = "true" if value else "false"
+                    ensure_direct_value_path(self.root, path)
+                    set_value_by_path(self.root, path, value)
+                    updated += 1
+                    continue
+                if not global_update.get(key, False):
+                    continue
+                path = str(key).split("::", 1)[1]
+                enum_id = enum_id_for_path(path)
+                if enum_id and enum_id != "__hidden__":
+                    value = enum_value_from_label(enum_id, value)
+                elif isinstance(value, bool):
+                    value = "true" if value else "false"
                 ensure_manual_value_path(self.root, path)
                 set_manual_value_by_path(self.root, path, value)
                 updated += 1
             log("Updated {} generic aux envelope parameter(s).\n".format(updated))
 
-        if global_update.get("generic_pitch_env", False):
+        if any(global_update.get(key, False) for key in global_values if str(key).startswith("param_pitch_env_manual::")):
             updated = 0
             for key, value in global_values.items():
                 if not str(key).startswith("param_pitch_env_manual::"):
+                    continue
+                if not global_update.get(key, False):
                     continue
                 path = str(key).split("::", 1)[1]
                 enum_id = enum_id_for_path(path)
                 if enum_id and enum_id != "__hidden__":
                     value = enum_value_from_label(enum_id, value)
+                elif isinstance(value, bool):
+                    value = "true" if value else "false"
                 ensure_manual_value_path(self.root, path)
                 set_manual_value_by_path(self.root, path, value)
                 updated += 1
             log("Updated {} generic pitch envelope parameter(s).\n".format(updated))
 
-        if global_update.get("generic_sub_osc", False):
+        if any(global_update.get(key, False) for key in global_values if str(key).startswith("param_sub_osc_manual::")):
             updated = 0
             for key, value in global_values.items():
                 if not str(key).startswith("param_sub_osc_manual::"):
+                    continue
+                if not global_update.get(key, False):
                     continue
                 path = str(key).split("::", 1)[1]
                 enum_id = enum_id_for_path(path)
                 if enum_id and enum_id != "__hidden__":
                     value = enum_value_from_label(enum_id, value)
+                elif isinstance(value, bool):
+                    value = "true" if value else "false"
                 ensure_manual_value_path(self.root, path)
                 set_manual_value_by_path(self.root, path, value)
                 updated += 1
@@ -4066,6 +4141,7 @@ class SamplerProcessors:
                 ("SustainLoop", "sustain", "sustain"),
                 ("ReleaseLoop", "release", "release"),
             ):
+                loop_vals = model.read_loop(zone, loop_tag)
                 flag_key = "loop_detection" if prefix == "sustain" else "release_loop_detection"
                 write_prefix = "loop" if prefix == "sustain" else "release_loop"
                 write_keys = (
@@ -4085,6 +4161,17 @@ class SamplerProcessors:
                     log("Loop detection: no {} loop fields are selected for writing.\n".format(loop_label))
                     continue
 
+                if write_mode and not (write_start or write_end or write_crossfade):
+                    mode_label = str(params.get("param_{}_loop_mode".format(prefix), "loop")).strip()
+                    mode_value = loop_mode_value_from_label(prefix, mode_label)
+                    before_mode = loop_vals.get("mode", "")
+                    if before_mode != str(mode_value):
+                        loop_vals["mode"] = str(mode_value)
+                        model.write_loop(zone, loop_tag, loop_vals)
+                        zone_changed = True
+                        log("Loop detection: {} {} loop -> mode={}\n".format(SamplerProcessors.zone_label(zone, i), loop_label, mode_value))
+                    continue
+
                 default_search_number = "25" if prefix == "sustain" else "10"
                 search_range_number = params.get("param_{}_loop_search_number".format(prefix), default_search_number)
                 search_range_unit = params.get("param_{}_loop_search_unit".format(prefix), "%")
@@ -4093,6 +4180,18 @@ class SamplerProcessors:
                 crossfade_custom_unit = params.get("param_{}_crossfade_custom_unit".format(prefix), "%")
                 start_number = params.get("param_{}_loop_start_pct".format(prefix), "25")
                 start_unit = params.get("param_{}_loop_start_unit".format(prefix), "%")
+                current_loop_start = clamp_int(
+                    parse_number_from_text(loop_vals.get("start", audio.zone_start), audio.zone_start),
+                    audio.zone_start,
+                    max(audio.zone_start, audio.zone_end - 1),
+                )
+                current_loop_end = clamp_int(
+                    parse_number_from_text(loop_vals.get("end", audio.zone_end), audio.zone_end),
+                    current_loop_start + 1,
+                    audio.zone_end,
+                )
+                current_start_rel = current_loop_start - audio.zone_start
+                current_end_rel = current_loop_end - audio.zone_start
                 release_loop_uses_absolute_start = False
 
                 if prefix == "release":
@@ -4141,16 +4240,36 @@ class SamplerProcessors:
                         pitch_hz=pitch_hz,
                     )
                     target_start_sample = int(basis_start) + int(target_offset)
-                    loop_info = AudioAnalysis.find_release_loop_to_sample_end(
-                        audio.samples,
-                        audio.sample_rate,
-                        target_start_sample=target_start_sample,
-                        search_range_samples=search_range_samples,
-                        fade_policy=crossfade_policy,
-                        fade_custom_number=crossfade_custom_number,
-                        fade_custom_unit=crossfade_custom_unit,
-                        pitch_hz=pitch_hz,
-                    )
+                    if not write_start:
+                        target_start_sample = current_start_rel
+                        search_range_samples = 0
+                    if not write_crossfade:
+                        crossfade_policy = "Custom"
+                        crossfade_custom_number = str(parse_number_from_text(loop_vals.get("crossfade", "0"), 0))
+                        crossfade_custom_unit = "samples"
+                    if write_end:
+                        loop_info = AudioAnalysis.find_release_loop_to_sample_end(
+                            audio.samples,
+                            audio.sample_rate,
+                            target_start_sample=target_start_sample,
+                            search_range_samples=search_range_samples,
+                            fade_policy=crossfade_policy,
+                            fade_custom_number=crossfade_custom_number,
+                            fade_custom_unit=crossfade_custom_unit,
+                            pitch_hz=pitch_hz,
+                        )
+                    else:
+                        loop_info = AudioAnalysis.find_loop_points(
+                            audio.samples,
+                            audio.sample_rate,
+                            target_start_sample=target_start_sample,
+                            target_end_sample=current_end_rel,
+                            search_range_samples=search_range_samples,
+                            fade_policy=crossfade_policy,
+                            fade_custom_number=crossfade_custom_number,
+                            fade_custom_unit=crossfade_custom_unit,
+                            pitch_hz=pitch_hz,
+                        )
                 else:
                     end_number = params.get("param_{}_loop_end_pct".format(prefix), "75")
                     end_unit = params.get("param_{}_loop_end_unit".format(prefix), "%")
@@ -4168,6 +4287,8 @@ class SamplerProcessors:
                         len(audio.samples),
                         pitch_hz=pitch_hz,
                     )
+                    if not write_start:
+                        target_start_sample = current_start_rel
                     target_end_sample = AudioAnalysis.parse_number_unit_samples(
                         end_number,
                         end_unit,
@@ -4175,6 +4296,14 @@ class SamplerProcessors:
                         len(audio.samples),
                         pitch_hz=pitch_hz,
                     )
+                    if not write_end:
+                        target_end_sample = current_end_rel
+                    if not write_start and not write_end:
+                        search_range_samples = 0
+                    if not write_crossfade:
+                        crossfade_policy = "Custom"
+                        crossfade_custom_number = str(parse_number_from_text(loop_vals.get("crossfade", "0"), 0))
+                        crossfade_custom_unit = "samples"
                     loop_info = AudioAnalysis.find_loop_points(
                         audio.samples,
                         audio.sample_rate,
@@ -4195,10 +4324,9 @@ class SamplerProcessors:
                 loop_end = audio.zone_start + loop_offset + loop_info["end"]
                 loop_length = max(1, loop_end - loop_start)
                 crossfade = clamp_loop_crossfade(audio.zone_start, loop_start, loop_end, int(loop_info.get("crossfade", 0)))
-                mode_label = str(params.get("param_{}_loop_mode".format(prefix), "on")).strip()
+                mode_label = str(params.get("param_{}_loop_mode".format(prefix), "loop")).strip()
                 mode_value = loop_mode_value_from_label(prefix, mode_label)
 
-                loop_vals = model.read_loop(zone, loop_tag)
                 before = (
                     loop_vals.get("start", ""),
                     loop_vals.get("end", ""),
@@ -4297,6 +4425,8 @@ class SamplerProcessors:
                     params.get("param_{}_crossfade_preference".format(prefix), "balanced"),
                     default_crossfade=current_crossfade,
                 )
+
+                crossfade = clamp_loop_crossfade(audio.zone_start, loop_start, loop_end, crossfade)
 
                 if crossfade == current_crossfade:
                     continue
@@ -6014,23 +6144,11 @@ class SamplerAdvGui:
                 except Exception:
                     pass
 
-        for key in (
-            "split_zones",
-            "start_end_refine",
-            "loop_detection",
-            "release_loop_detection",
-            "loop_detune_detection",
-            "release_loop_detune_detection",
-            "pitch_detection_root",
-            "pitch_detection_detune",
-            "multiple_notes_case",
-            "normalize",
-        ):
-            if key in self.processing_update:
-                try:
-                    self.processing_update[key].trace_add("write", self.schedule_waveform_refresh)
-                except Exception:
-                    pass
+        for var in self.processing_update.values():
+            try:
+                var.trace_add("write", self.schedule_waveform_refresh)
+            except Exception:
+                pass
 
         for var in self.loop_vars.values():
             try:
@@ -7244,7 +7362,7 @@ class SamplerAdvGui:
         drow += 1
         self._entry_row(preset_box, drow, "Round robin seed", "rr_seed", self.global_vars, self.global_update, "rr_seed")
         drow += 1
-        generic_lfo_var = self._checkbox_row(preset_box, drow, "LFO / routing parameters", "generic_lfo", store=self.global_update, tooltip="Expose the preset LFO Manual parameters and modulation-routing values directly, and synthesize missing LFO/routing blocks when needed.")
+        generic_lfo_var = self._expander_row(preset_box, drow, "LFO / routing parameters", "generic_lfo_panel", tooltip="Show preset LFO Manual parameters and modulation-routing values.")
         drow += 1
         self.generic_lfo_frame = ttk.Frame(preset_box)
         self.generic_lfo_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -7279,7 +7397,7 @@ class SamplerAdvGui:
         self._register_visibility_rule(planned_envelope_shape_var, planned_envelope_shape_options)
         drow += 1
 
-        generic_filter_var = self._checkbox_row(preset_box, drow, "Filter settings", "generic_filter", store=self.global_update, tooltip="Expose the preset filter and shaper parameters directly, and synthesize missing slot structures when needed.")
+        generic_filter_var = self._expander_row(preset_box, drow, "Filter settings", "generic_filter_panel", tooltip="Show preset filter and shaper parameters.")
         drow += 1
         self.generic_filter_frame = ttk.Frame(preset_box)
         self.generic_filter_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -7287,7 +7405,7 @@ class SamplerAdvGui:
         self._register_visibility_rule(generic_filter_var, self.generic_filter_frame)
         drow += 1
 
-        generic_aux_env_var = self._checkbox_row(preset_box, drow, "Aux envelope parameters", "generic_aux_env", store=self.global_update, tooltip="Expose aux envelope parameters directly, including modulation destinations, and synthesize the missing slot structure when needed.")
+        generic_aux_env_var = self._expander_row(preset_box, drow, "Aux envelope parameters", "generic_aux_env_panel", tooltip="Show aux envelope parameters, including modulation destinations.")
         drow += 1
         self.generic_aux_env_frame = ttk.Frame(preset_box)
         self.generic_aux_env_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -7295,7 +7413,7 @@ class SamplerAdvGui:
         self._register_visibility_rule(generic_aux_env_var, self.generic_aux_env_frame)
         drow += 1
 
-        generic_pitch_env_var = self._checkbox_row(preset_box, drow, "Pitch envelope parameters", "generic_pitch_env", store=self.global_update, tooltip="Expose pitch envelope parameters directly and synthesize the missing slot structure when needed.")
+        generic_pitch_env_var = self._expander_row(preset_box, drow, "Pitch envelope parameters", "generic_pitch_env_panel", tooltip="Show pitch envelope parameters.")
         drow += 1
         self.generic_pitch_env_frame = ttk.Frame(preset_box)
         self.generic_pitch_env_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -7303,7 +7421,7 @@ class SamplerAdvGui:
         self._register_visibility_rule(generic_pitch_env_var, self.generic_pitch_env_frame)
         drow += 1
 
-        generic_sub_osc_var = self._checkbox_row(preset_box, drow, "Sub oscillator parameters", "generic_sub_osc", store=self.global_update, tooltip="Expose sub oscillator parameters directly and synthesize the missing slot structure when needed.")
+        generic_sub_osc_var = self._expander_row(preset_box, drow, "Sub oscillator parameters", "generic_sub_osc_panel", tooltip="Show sub oscillator parameters.")
         drow += 1
         self.generic_sub_osc_frame = ttk.Frame(preset_box)
         self.generic_sub_osc_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -7404,6 +7522,7 @@ class SamplerAdvGui:
                     store[k].set(val)
                 else:
                     store[k].set(bool(val))
+        migrate_generic_panel_write_flags(DEFAULT_TOOL_TEMPLATE, self.global_update)
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
             if split_mode == "off":
@@ -7491,6 +7610,7 @@ class SamplerAdvGui:
                     store[k].set(bool(val))
 
         migrate_loop_write_flags(data, self.processing_update)
+        migrate_generic_panel_write_flags(data, self.global_update)
 
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
@@ -8175,19 +8295,37 @@ class SamplerAdvGui:
         return self.waveform_analysis_cache[cache_key]
 
     def current_waveform_overlay_flags(self):
-        split_enabled = bool(self.processing_update.get("split_zones", tk.BooleanVar(value=False)).get())
-        split_mode = self.global_vars.get("param_split_mode", tk.StringVar(value="detect")).get()
+        def var_value(mapping, key, default):
+            var = mapping.get(key)
+            return var.get() if var is not None else default
+
+        split_enabled = bool(var_value(self.processing_update, "split_zones", False))
+        split_mode = var_value(self.global_vars, "param_split_mode", "detect")
+        sustain_loop_expanded = bool(var_value(self.processing_update, "loop_detection", False))
+        release_loop_expanded = bool(var_value(self.processing_update, "release_loop_detection", False))
+        sustain_position_preview = (
+            bool(var_value(self.processing_update, "loop_write_start", False))
+            or bool(var_value(self.processing_update, "loop_write_end", False))
+            or bool(var_value(self.processing_update, "loop_write_crossfade", False))
+        )
+        release_position_preview = (
+            bool(var_value(self.processing_update, "release_loop_write_start", False))
+            or bool(var_value(self.processing_update, "release_loop_write_end", False))
+            or bool(var_value(self.processing_update, "release_loop_write_crossfade", False))
+        )
         return {
             "split_detection": split_enabled and split_mode == "detection",
             "split_gate": split_enabled and split_mode in ("gate", "detect"),
             "split_grid": split_enabled and split_mode == "grid",
-            "refine": bool(self.processing_update.get("start_end_refine", tk.BooleanVar(value=False)).get()),
-            "sustain_loop": bool(self.processing_update.get("loop_detection", tk.BooleanVar(value=False)).get()),
-            "release_loop": bool(self.processing_update.get("release_loop_detection", tk.BooleanVar(value=False)).get()),
-            "sustain_crossfade": bool(self.processing_update.get("loop_detection", tk.BooleanVar(value=False)).get())
-            and bool(self.processing_update.get("loop_write_crossfade", tk.BooleanVar(value=True)).get()),
-            "release_crossfade": bool(self.processing_update.get("release_loop_detection", tk.BooleanVar(value=False)).get())
-            and bool(self.processing_update.get("release_loop_write_crossfade", tk.BooleanVar(value=True)).get()),
+            "refine": bool(var_value(self.processing_update, "start_end_refine", False)),
+            "sustain_loop": sustain_loop_expanded,
+            "release_loop": release_loop_expanded,
+            "sustain_loop_predict": sustain_loop_expanded and sustain_position_preview,
+            "release_loop_predict": release_loop_expanded and release_position_preview,
+            "sustain_crossfade": sustain_loop_expanded and sustain_position_preview
+            and bool(var_value(self.processing_update, "loop_write_crossfade", True)),
+            "release_crossfade": release_loop_expanded and release_position_preview
+            and bool(var_value(self.processing_update, "release_loop_write_crossfade", True)),
         }
 
     def current_detection_split_preview(self, samples, sample_rate):
@@ -8315,7 +8453,67 @@ class SamplerAdvGui:
         )
         return release_threshold, release_tail_margin, next_activity_threshold, shift_start, shift_stop
 
-    def predict_loop_preview_for_slice(self, slice_samples, sample_rate, prefix, sustain_loop_info=None):
+    def current_loop_preview_seed(self, prefix, zone_audio, slice_start, slice_end):
+        if self.model is None or self.current_zone_index is None:
+            return None
+        loop_tag = "SustainLoop" if prefix == "sustain" else "ReleaseLoop"
+        try:
+            zone = self.model.get_zone(self.current_zone_index)
+            loop_vals = self.model.read_loop(zone, loop_tag)
+            current_start = clamp_int(
+                parse_number_from_text(loop_vals.get("start", zone_audio.zone_start), zone_audio.zone_start),
+                zone_audio.zone_start,
+                max(zone_audio.zone_start, zone_audio.zone_end - 1),
+            )
+            current_end = clamp_int(
+                parse_number_from_text(loop_vals.get("end", zone_audio.zone_end), zone_audio.zone_end),
+                current_start + 1,
+                zone_audio.zone_end,
+            )
+        except Exception:
+            return None
+
+        if int(slice_start) != 0 or int(slice_end) != len(zone_audio.samples):
+            abs_slice_start = zone_audio.zone_start + int(slice_start)
+            abs_slice_end = zone_audio.zone_start + int(slice_end)
+            current_start = self.model.proportional_sample_pos(
+                current_start,
+                zone_audio.zone_start,
+                zone_audio.zone_end,
+                abs_slice_start,
+                abs_slice_end,
+            )
+            current_end = self.model.proportional_sample_pos(
+                current_end,
+                zone_audio.zone_start,
+                zone_audio.zone_end,
+                abs_slice_start,
+                abs_slice_end,
+            )
+        else:
+            abs_slice_start = zone_audio.zone_start
+            abs_slice_end = zone_audio.zone_end
+
+        current_start = max(abs_slice_start, min(current_start, max(abs_slice_start, abs_slice_end - 1)))
+        current_end = max(current_start + 1, min(current_end, abs_slice_end))
+        return {
+            "start": int(current_start - abs_slice_start),
+            "end": int(current_end - abs_slice_start),
+            "crossfade": int(parse_number_from_text(loop_vals.get("crossfade", "0"), 0)),
+            "detune": int(parse_number_from_text(loop_vals.get("detune", "0"), 0)),
+        }
+
+    def predict_loop_preview_for_slice(
+        self,
+        slice_samples,
+        sample_rate,
+        prefix,
+        sustain_loop_info=None,
+        existing_loop_info=None,
+        write_start=True,
+        write_end=True,
+        write_crossfade=True,
+    ):
         start_number = self.global_vars.get("param_{}_loop_start_pct".format(prefix), tk.StringVar(value="25")).get()
         start_unit = self.global_vars.get("param_{}_loop_start_unit".format(prefix), tk.StringVar(value="%")).get()
         default_search_number = "25" if prefix == "sustain" else "10"
@@ -8327,6 +8525,23 @@ class SamplerAdvGui:
         diapason_hz = parse_number_from_text(self.global_vars.get("param_diapason_hz", tk.StringVar(value=DEFAULT_DIAPASON_HZ)).get(), 440.0)
 
         pitch_hz = AudioAnalysis.detect_pitch_hz(slice_samples, sample_rate)
+        current_start = None
+        current_end = None
+        if existing_loop_info is not None:
+            try:
+                current_start = clamp_int(
+                    parse_number_from_text(existing_loop_info.get("start", 0), 0),
+                    0,
+                    max(0, len(slice_samples) - 1),
+                )
+                current_end = clamp_int(
+                    parse_number_from_text(existing_loop_info.get("end", len(slice_samples)), len(slice_samples)),
+                    current_start + 1,
+                    len(slice_samples),
+                )
+            except Exception:
+                current_start = None
+                current_end = None
         release_loop_uses_absolute_start = False
         if prefix == "release":
             release_loop_uses_absolute_start = True
@@ -8374,16 +8589,36 @@ class SamplerAdvGui:
                 pitch_hz=pitch_hz,
             )
             target_start_sample = int(basis_start) + int(target_offset)
-            loop_info = AudioAnalysis.find_release_loop_to_sample_end(
-                slice_samples,
-                sample_rate,
-                target_start_sample=target_start_sample,
-                search_range_samples=search_range_samples,
-                fade_policy=crossfade_policy,
-                fade_custom_number=crossfade_custom_number,
-                fade_custom_unit=crossfade_custom_unit,
-                pitch_hz=pitch_hz,
-            )
+            if not write_start and current_start is not None:
+                target_start_sample = current_start
+                search_range_samples = 0
+            if not write_crossfade and existing_loop_info is not None:
+                crossfade_policy = "Custom"
+                crossfade_custom_number = str(parse_number_from_text(existing_loop_info.get("crossfade", "0"), 0))
+                crossfade_custom_unit = "samples"
+            if write_end or current_end is None:
+                loop_info = AudioAnalysis.find_release_loop_to_sample_end(
+                    slice_samples,
+                    sample_rate,
+                    target_start_sample=target_start_sample,
+                    search_range_samples=search_range_samples,
+                    fade_policy=crossfade_policy,
+                    fade_custom_number=crossfade_custom_number,
+                    fade_custom_unit=crossfade_custom_unit,
+                    pitch_hz=pitch_hz,
+                )
+            else:
+                loop_info = AudioAnalysis.find_loop_points(
+                    slice_samples,
+                    sample_rate,
+                    target_start_sample=target_start_sample,
+                    target_end_sample=current_end,
+                    search_range_samples=search_range_samples,
+                    fade_policy=crossfade_policy,
+                    fade_custom_number=crossfade_custom_number,
+                    fade_custom_unit=crossfade_custom_unit,
+                    pitch_hz=pitch_hz,
+                )
         else:
             end_number = self.global_vars.get("param_{}_loop_end_pct".format(prefix), tk.StringVar(value="75")).get()
             end_unit = self.global_vars.get("param_{}_loop_end_unit".format(prefix), tk.StringVar(value="%")).get()
@@ -8402,6 +8637,8 @@ class SamplerAdvGui:
                 len(slice_samples),
                 pitch_hz=pitch_hz,
             )
+            if not write_start and current_start is not None:
+                target_start_sample = current_start
             target_end_sample = AudioAnalysis.parse_number_unit_samples(
                 end_number,
                 end_unit,
@@ -8409,6 +8646,14 @@ class SamplerAdvGui:
                 len(slice_samples),
                 pitch_hz=pitch_hz,
             )
+            if not write_end and current_end is not None:
+                target_end_sample = current_end
+            if not write_start and not write_end and current_start is not None and current_end is not None:
+                search_range_samples = 0
+            if not write_crossfade and existing_loop_info is not None:
+                crossfade_policy = "Custom"
+                crossfade_custom_number = str(parse_number_from_text(existing_loop_info.get("crossfade", "0"), 0))
+                crossfade_custom_unit = "samples"
             loop_info = AudioAnalysis.find_loop_points(
                 slice_samples,
                 sample_rate,
@@ -8426,8 +8671,14 @@ class SamplerAdvGui:
         loop_offset = int(release_region_start) if prefix == "release" and release_region_start is not None and not release_loop_uses_absolute_start else 0
         loop_start = int(loop_offset + loop_info["start"])
         loop_end = int(loop_offset + loop_info["end"])
+        if not write_start and current_start is not None:
+            loop_start = int(current_start)
+        if not write_end and current_end is not None:
+            loop_end = int(current_end)
+        loop_start = max(0, min(loop_start, max(0, len(slice_samples) - 1)))
+        loop_end = max(loop_start + 1, min(loop_end, len(slice_samples)))
         loop_length = max(1, loop_end - loop_start)
-        crossfade = max(0, min(loop_length // 2, int(loop_info.get("crossfade", 0))))
+        crossfade = clamp_loop_crossfade(0, loop_start, loop_end, int(loop_info.get("crossfade", 0)))
 
         detune_value = 0
         detune_enabled = bool(
@@ -8918,18 +9169,30 @@ class SamplerAdvGui:
 
         predicted_sustain_loops = []
         predicted_release_loops = []
+        sustain_write_start = bool(self.processing_update.get("loop_write_start", tk.BooleanVar(value=True)).get())
+        sustain_write_end = bool(self.processing_update.get("loop_write_end", tk.BooleanVar(value=True)).get())
+        sustain_write_crossfade = bool(self.processing_update.get("loop_write_crossfade", tk.BooleanVar(value=True)).get())
+        release_write_start = bool(self.processing_update.get("release_loop_write_start", tk.BooleanVar(value=True)).get())
+        release_write_end = bool(self.processing_update.get("release_loop_write_end", tk.BooleanVar(value=True)).get())
+        release_write_crossfade = bool(self.processing_update.get("release_loop_write_crossfade", tk.BooleanVar(value=True)).get())
         use_predicted_slice_loops = (
             overlay_flags["split_detection"]
             or overlay_flags["split_gate"]
             or overlay_flags["split_grid"]
             or overlay_flags["refine"]
         )
-        if overlay_flags["sustain_loop"] or overlay_flags["sustain_crossfade"]:
+        if overlay_flags["sustain_loop"]:
             if use_predicted_slice_loops:
                 for slice_start, slice_end in loop_slice_bounds:
                     slice_samples = samples[slice_start:slice_end]
                     if len(slice_samples) == 0:
                         continue
+                    existing_loop_info = self.current_loop_preview_seed("sustain", zone_audio, slice_start, slice_end)
+                    if not overlay_flags["sustain_loop_predict"]:
+                        if existing_loop_info is not None:
+                            predicted_sustain_loops.append((slice_start, slice_end, existing_loop_info))
+                        continue
+                    existing_loop_key = tuple(existing_loop_info.get(key, 0) for key in ("start", "end", "crossfade", "detune")) if existing_loop_info is not None else None
                     loop_info = self.get_cached_waveform_analysis(
                         (
                             "loop",
@@ -8947,36 +9210,66 @@ class SamplerAdvGui:
                             self.global_vars.get("param_sustain_crossfade_custom_number", tk.StringVar(value="25")).get(),
                             self.global_vars.get("param_sustain_crossfade_custom_unit", tk.StringVar(value="%")).get(),
                             bool(self.processing_update.get("loop_detune_detection", tk.BooleanVar(value=False)).get()),
+                            bool(sustain_write_start),
+                            bool(sustain_write_end),
+                            bool(sustain_write_crossfade),
+                            existing_loop_key,
                         ),
-                        lambda slice_samples=slice_samples: self.predict_loop_preview_for_slice(slice_samples, zone_audio.sample_rate, "sustain"),
+                        lambda slice_samples=slice_samples, existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
+                            slice_samples,
+                            zone_audio.sample_rate,
+                            "sustain",
+                            existing_loop_info=existing_loop_info,
+                            write_start=sustain_write_start,
+                            write_end=sustain_write_end,
+                            write_crossfade=sustain_write_crossfade,
+                        ),
                     )
                     if loop_info is not None:
                         predicted_sustain_loops.append((slice_start, slice_end, loop_info))
             else:
-                loop_info = self.get_cached_waveform_analysis(
-                    (
-                        "loop",
-                        "sustain",
-                        zone_cache_key,
-                        0,
-                        len(samples),
-                        self.global_vars.get("param_sustain_loop_start_pct", tk.StringVar(value="25")).get(),
-                        self.global_vars.get("param_sustain_loop_start_unit", tk.StringVar(value="%")).get(),
-                        self.global_vars.get("param_sustain_loop_end_pct", tk.StringVar(value="75")).get(),
-                        self.global_vars.get("param_sustain_loop_end_unit", tk.StringVar(value="%")).get(),
-                        self.global_vars.get("param_sustain_loop_search_number", tk.StringVar(value="25")).get(),
-                        self.global_vars.get("param_sustain_loop_search_unit", tk.StringVar(value="%")).get(),
-                        self.global_vars.get("param_sustain_crossfade_policy", tk.StringVar(value="No fade")).get(),
-                        self.global_vars.get("param_sustain_crossfade_custom_number", tk.StringVar(value="25")).get(),
-                        self.global_vars.get("param_sustain_crossfade_custom_unit", tk.StringVar(value="%")).get(),
-                        bool(self.processing_update.get("loop_detune_detection", tk.BooleanVar(value=False)).get()),
-                    ),
-                    lambda: self.predict_loop_preview_for_slice(samples, zone_audio.sample_rate, "sustain"),
-                )
-                if loop_info is not None:
-                    predicted_sustain_loops.append((0, len(samples), loop_info))
+                existing_loop_info = self.current_loop_preview_seed("sustain", zone_audio, 0, len(samples))
+                if not overlay_flags["sustain_loop_predict"]:
+                    if existing_loop_info is not None:
+                        predicted_sustain_loops.append((0, len(samples), existing_loop_info))
+                else:
+                    existing_loop_key = tuple(existing_loop_info.get(key, 0) for key in ("start", "end", "crossfade", "detune")) if existing_loop_info is not None else None
+                    loop_info = self.get_cached_waveform_analysis(
+                        (
+                            "loop",
+                            "sustain",
+                            zone_cache_key,
+                            0,
+                            len(samples),
+                            self.global_vars.get("param_sustain_loop_start_pct", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_sustain_loop_start_unit", tk.StringVar(value="%")).get(),
+                            self.global_vars.get("param_sustain_loop_end_pct", tk.StringVar(value="75")).get(),
+                            self.global_vars.get("param_sustain_loop_end_unit", tk.StringVar(value="%")).get(),
+                            self.global_vars.get("param_sustain_loop_search_number", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_sustain_loop_search_unit", tk.StringVar(value="%")).get(),
+                            self.global_vars.get("param_sustain_crossfade_policy", tk.StringVar(value="No fade")).get(),
+                            self.global_vars.get("param_sustain_crossfade_custom_number", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_sustain_crossfade_custom_unit", tk.StringVar(value="%")).get(),
+                            bool(self.processing_update.get("loop_detune_detection", tk.BooleanVar(value=False)).get()),
+                            bool(sustain_write_start),
+                            bool(sustain_write_end),
+                            bool(sustain_write_crossfade),
+                            existing_loop_key,
+                        ),
+                        lambda existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
+                            samples,
+                            zone_audio.sample_rate,
+                            "sustain",
+                            existing_loop_info=existing_loop_info,
+                            write_start=sustain_write_start,
+                            write_end=sustain_write_end,
+                            write_crossfade=sustain_write_crossfade,
+                        ),
+                    )
+                    if loop_info is not None:
+                        predicted_sustain_loops.append((0, len(samples), loop_info))
 
-        if overlay_flags["release_loop"] or overlay_flags["release_crossfade"]:
+        if overlay_flags["release_loop"]:
             if use_predicted_slice_loops:
                 for idx, (slice_start, slice_end) in enumerate(loop_slice_bounds):
                     slice_samples = samples[slice_start:slice_end]
@@ -8987,6 +9280,12 @@ class SamplerAdvGui:
                         sustain_entry = predicted_sustain_loops[idx]
                         if sustain_entry[0] == slice_start and sustain_entry[1] == slice_end:
                             sustain_loop_info = sustain_entry[2]
+                    existing_loop_info = self.current_loop_preview_seed("release", zone_audio, slice_start, slice_end)
+                    if not overlay_flags["release_loop_predict"]:
+                        if existing_loop_info is not None:
+                            predicted_release_loops.append((slice_start, slice_end, existing_loop_info))
+                        continue
+                    existing_loop_key = tuple(existing_loop_info.get(key, 0) for key in ("start", "end", "crossfade", "detune")) if existing_loop_info is not None else None
                     loop_info = self.get_cached_waveform_analysis(
                         (
                             "loop",
@@ -9004,8 +9303,21 @@ class SamplerAdvGui:
                             self.global_vars.get("param_release_crossfade_custom_unit", tk.StringVar(value="%")).get(),
                             bool(self.processing_update.get("release_loop_detune_detection", tk.BooleanVar(value=False)).get()),
                             int(sustain_loop_info.get("end", 0)) if sustain_loop_info is not None else -1,
+                            bool(release_write_start),
+                            bool(release_write_end),
+                            bool(release_write_crossfade),
+                            existing_loop_key,
                         ),
-                        lambda slice_samples=slice_samples, sustain_loop_info=sustain_loop_info: self.predict_loop_preview_for_slice(slice_samples, zone_audio.sample_rate, "release", sustain_loop_info=sustain_loop_info),
+                        lambda slice_samples=slice_samples, sustain_loop_info=sustain_loop_info, existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
+                            slice_samples,
+                            zone_audio.sample_rate,
+                            "release",
+                            sustain_loop_info=sustain_loop_info,
+                            existing_loop_info=existing_loop_info,
+                            write_start=release_write_start,
+                            write_end=release_write_end,
+                            write_crossfade=release_write_crossfade,
+                        ),
                     )
                     if loop_info is not None:
                         predicted_release_loops.append((slice_start, slice_end, loop_info))
@@ -9015,28 +9327,47 @@ class SamplerAdvGui:
                     sustain_entry = predicted_sustain_loops[0]
                     if isinstance(sustain_entry, tuple) and len(sustain_entry) == 3:
                         sustain_loop_info = sustain_entry[2]
-                loop_info = self.get_cached_waveform_analysis(
-                    (
-                        "loop",
-                        "release",
-                        zone_cache_key,
-                        0,
-                        len(samples),
-                        self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
-                        self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
-                        self.global_vars.get("param_release_loop_start_unit", tk.StringVar(value="%")).get(),
-                        self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
-                        self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
-                        self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
-                        self.global_vars.get("param_release_crossfade_custom_number", tk.StringVar(value="25")).get(),
-                        self.global_vars.get("param_release_crossfade_custom_unit", tk.StringVar(value="%")).get(),
-                        bool(self.processing_update.get("release_loop_detune_detection", tk.BooleanVar(value=False)).get()),
-                        int(sustain_loop_info.get("end", 0)) if sustain_loop_info is not None else -1,
-                    ),
-                    lambda sustain_loop_info=sustain_loop_info: self.predict_loop_preview_for_slice(samples, zone_audio.sample_rate, "release", sustain_loop_info=sustain_loop_info),
-                )
-                if loop_info is not None:
-                    predicted_release_loops.append((0, len(samples), loop_info))
+                existing_loop_info = self.current_loop_preview_seed("release", zone_audio, 0, len(samples))
+                if not overlay_flags["release_loop_predict"]:
+                    if existing_loop_info is not None:
+                        predicted_release_loops.append((0, len(samples), existing_loop_info))
+                else:
+                    existing_loop_key = tuple(existing_loop_info.get(key, 0) for key in ("start", "end", "crossfade", "detune")) if existing_loop_info is not None else None
+                    loop_info = self.get_cached_waveform_analysis(
+                        (
+                            "loop",
+                            "release",
+                            zone_cache_key,
+                            0,
+                            len(samples),
+                            self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
+                            self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_release_loop_start_unit", tk.StringVar(value="%")).get(),
+                            self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
+                            self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
+                            self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
+                            self.global_vars.get("param_release_crossfade_custom_number", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_release_crossfade_custom_unit", tk.StringVar(value="%")).get(),
+                            bool(self.processing_update.get("release_loop_detune_detection", tk.BooleanVar(value=False)).get()),
+                            int(sustain_loop_info.get("end", 0)) if sustain_loop_info is not None else -1,
+                            bool(release_write_start),
+                            bool(release_write_end),
+                            bool(release_write_crossfade),
+                            existing_loop_key,
+                        ),
+                        lambda sustain_loop_info=sustain_loop_info, existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
+                            samples,
+                            zone_audio.sample_rate,
+                            "release",
+                            sustain_loop_info=sustain_loop_info,
+                            existing_loop_info=existing_loop_info,
+                            write_start=release_write_start,
+                            write_end=release_write_end,
+                            write_crossfade=release_write_crossfade,
+                        ),
+                    )
+                    if loop_info is not None:
+                        predicted_release_loops.append((0, len(samples), loop_info))
 
         if overlay_flags["sustain_loop"] or overlay_flags["release_loop"]:
             sustain_lane_top = lane_bottom - lane_height
@@ -9335,9 +9666,39 @@ class SamplerAdvGui:
                 label = path.split("/", 1)[1] if "/" in path else path
                 tooltip = "Value written directly to {}".format(path)
                 if enum_id:
-                    self._choice_row(inner, row, label, key, enum_choices(enum_id), enum_label_from_value(enum_id, value), tooltip=tooltip)
+                    self._choice_row(
+                        inner,
+                        row,
+                        label,
+                        key,
+                        enum_choices(enum_id),
+                        enum_label_from_value(enum_id, value),
+                        checkbox_store=self.global_update,
+                        checkbox_key=key,
+                        tooltip=tooltip,
+                    )
+                elif manual_parameter_kind_for_path(path) == "bool" or value_looks_bool(value):
+                    self._bool_value_row(
+                        inner,
+                        row,
+                        label,
+                        key,
+                        bool_from_value(value),
+                        checkbox_store=self.global_update,
+                        checkbox_key=key,
+                        tooltip=tooltip,
+                    )
                 else:
-                    self._param_row(inner, row, label, key, float_to_text(value), self.global_vars, tooltip=tooltip)
+                    self._param_row(
+                        inner,
+                        row,
+                        label,
+                        key,
+                        float_to_text(value),
+                        checkbox_store=self.global_update,
+                        checkbox_key=key,
+                        tooltip=tooltip,
+                    )
                 getattr(self, dynamic_keys_attr).append(key)
                 row += 1
 

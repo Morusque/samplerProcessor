@@ -510,11 +510,13 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_sub_osc_manual::Player/SubOsc/Slot/Value/SimplerSubOsc/Type": "5",
             },
             {
-                "generic_lfo": True,
-                "generic_filter": True,
-                "generic_aux_env": True,
-                "generic_pitch_env": True,
-                "generic_sub_osc": True,
+                "param_lfo_manual::AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency": True,
+                "param_lfo_value::MidiCtrl.7/Feedback": True,
+                "param_filter_manual::Filter/Slot/Value/SimplerFilter/Freq": True,
+                "param_filter_manual::Shaper/Slot/Value/SimplerShaper/Amount": True,
+                "param_aux_env_manual::AuxEnv/Slot/Value/SimplerAuxEnvelope/AttackTime": True,
+                "param_pitch_env_manual::Pitch/Envelope/Slot/Value/SimplerPitchEnvelope/Amount": True,
+                "param_sub_osc_manual::Player/SubOsc/Slot/Value/SimplerSubOsc/Type": True,
             },
         )
 
@@ -980,16 +982,41 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.AudioAnalysis.parse_number_unit_samples("2", "beat(s)", 48000, 5000, tempo_bpm="120"), 48000)
 
     def test_loop_mode_labels_match_validated_adv_values(self):
+        self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "on"), "0")
         self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "loop"), "1")
-        self.assertEqual(MODULE.loop_mode_value_from_label("release", "loop"), "3")
-        self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "forward"), "1")
-        self.assertEqual(MODULE.loop_mode_value_from_label("release", "on"), "3")
         self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "back and forth"), "2")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "on"), "0")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "loop"), "1")
         self.assertEqual(MODULE.loop_mode_value_from_label("release", "back-and-forth"), "2")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "off"), "3")
+        self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "forward"), "1")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "forward"), "1")
+        self.assertEqual(MODULE.loop_mode_label_from_value("sustain", "0"), "on")
         self.assertEqual(MODULE.loop_mode_label_from_value("sustain", "1"), "loop")
-        self.assertEqual(MODULE.loop_mode_label_from_value("release", "3"), "loop")
         self.assertEqual(MODULE.loop_mode_label_from_value("sustain", "2"), "back-and-forth")
+        self.assertEqual(MODULE.loop_mode_label_from_value("release", "0"), "on")
+        self.assertEqual(MODULE.loop_mode_label_from_value("release", "1"), "loop")
         self.assertEqual(MODULE.loop_mode_label_from_value("release", "2"), "back-and-forth")
+        self.assertEqual(MODULE.loop_mode_label_from_value("release", "3"), "off")
+
+    def test_loop_mode_labels_match_example_adv_filenames(self):
+        examples = {
+            "example_sustain_on.adv": ("SustainLoop", "on"),
+            "example_sustain_loop.adv": ("SustainLoop", "loop"),
+            "example_sustain_back-and-forth.adv": ("SustainLoop", "back-and-forth"),
+            "example_release_on.adv": ("ReleaseLoop", "on"),
+            "example_release_loop.adv": ("ReleaseLoop", "loop"),
+            "example_release_back-and-forth.adv": ("ReleaseLoop", "back-and-forth"),
+            "example_release_off.adv": ("ReleaseLoop", "off"),
+        }
+        for filename, (loop_tag, label) in examples.items():
+            with self.subTest(filename=filename):
+                if not Path(__file__).with_name(filename).exists():
+                    self.skipTest("Loop mode example ADV files are not present in this checkout.")
+                model = self.load_model(filename)
+                mode = model.read_loop(model.get_zone(0), loop_tag)["mode"]
+                prefix = "release" if loop_tag == "ReleaseLoop" else "sustain"
+                self.assertEqual(mode, MODULE.loop_mode_value_from_label(prefix, label))
 
     def test_migrate_loop_write_flags_preserves_old_loop_templates(self):
         processing_update = {
@@ -1016,6 +1043,31 @@ class SamplerAdvProcessorTests(unittest.TestCase):
             processing_update,
         )
         self.assertFalse(processing_update["loop_write_start"].get())
+
+    def test_waveform_loop_overlay_flags_show_open_panels_without_write_flags(self):
+        gui = MODULE.SamplerAdvGui.__new__(MODULE.SamplerAdvGui)
+        gui.processing_update = {
+            "split_zones": FakeVar(False),
+            "loop_detection": FakeVar(True),
+            "release_loop_detection": FakeVar(True),
+            "loop_write_start": FakeVar(False),
+            "loop_write_end": FakeVar(False),
+            "loop_write_crossfade": FakeVar(False),
+            "release_loop_write_start": FakeVar(False),
+            "release_loop_write_end": FakeVar(False),
+            "release_loop_write_crossfade": FakeVar(False),
+            "start_end_refine": FakeVar(False),
+        }
+        gui.global_vars = {"param_split_mode": FakeVar("detect")}
+
+        flags = gui.current_waveform_overlay_flags()
+
+        self.assertTrue(flags["sustain_loop"])
+        self.assertTrue(flags["release_loop"])
+        self.assertFalse(flags["sustain_loop_predict"])
+        self.assertFalse(flags["release_loop_predict"])
+        self.assertFalse(flags["sustain_crossfade"])
+        self.assertFalse(flags["release_crossfade"])
 
     def test_frequency_to_midi_parts_respects_diapason(self):
         _midi_float, root_key, cents = MODULE.AudioAnalysis.frequency_to_midi_parts(432.0, diapason_hz=432.0)
@@ -1733,6 +1785,120 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(sustain["mode"], MODULE.SUSTAIN_MODE_VALUES["back-and-forth"])
         self.assertEqual(sustain["crossfade"], "0")
 
+    def test_detect_zone_loops_ignores_unchecked_parameter_values(self):
+        sr = 48000
+        t = MODULE.np.arange(sr * 2, dtype=MODULE.np.float64) / sr
+        samples = (0.4 * MODULE.np.sin(2.0 * MODULE.np.pi * 220.0 * t)).astype(MODULE.np.float32)
+        model = FakeLoopModel(samples)
+        zone = model.get_zone(0)
+        sustain_loop = MODULE.child(zone, "SustainLoop")
+        MODULE.set_value(sustain_loop, "Start", 12000)
+        MODULE.set_value(sustain_loop, "End", 36000)
+        MODULE.set_value(sustain_loop, "Mode", "1")
+        MODULE.set_value(sustain_loop, "Crossfade", "123")
+        audio_cache = FakeLoopAudioCache(model)
+
+        count = MODULE.SamplerProcessors.detect_zone_loops(
+            model,
+            {
+                "loop_detection": True,
+                "loop_write_start": False,
+                "loop_write_end": False,
+                "loop_write_mode": False,
+                "loop_write_crossfade": False,
+                "param_sustain_loop_start_pct": "99",
+                "param_sustain_loop_end_pct": "100",
+                "param_sustain_loop_search_number": "0",
+                "param_sustain_loop_search_unit": "%",
+                "param_sustain_crossfade_policy": "Longest possible",
+                "param_sustain_loop_mode": "back-and-forth",
+            },
+            audio_cache,
+        )
+
+        self.assertEqual(count, 0)
+        sustain = model.read_loop(zone, "SustainLoop")
+        self.assertEqual(sustain["start"], "12000")
+        self.assertEqual(sustain["end"], "36000")
+        self.assertEqual(sustain["mode"], "1")
+        self.assertEqual(sustain["crossfade"], "123")
+
+    def test_detect_zone_loops_keeps_locked_anchors_when_only_crossfade_is_checked(self):
+        sr = 48000
+        t = MODULE.np.arange(sr * 2, dtype=MODULE.np.float64) / sr
+        samples = (0.4 * MODULE.np.sin(2.0 * MODULE.np.pi * 220.0 * t)).astype(MODULE.np.float32)
+        model = FakeLoopModel(samples)
+        zone = model.get_zone(0)
+        sustain_loop = MODULE.child(zone, "SustainLoop")
+        MODULE.set_value(sustain_loop, "Start", 12000)
+        MODULE.set_value(sustain_loop, "End", 36000)
+        MODULE.set_value(sustain_loop, "Crossfade", "0")
+        audio_cache = FakeLoopAudioCache(model)
+
+        count = MODULE.SamplerProcessors.detect_zone_loops(
+            model,
+            {
+                "loop_detection": True,
+                "loop_write_start": False,
+                "loop_write_end": False,
+                "loop_write_mode": False,
+                "loop_write_crossfade": True,
+                "param_sustain_loop_start_pct": "99",
+                "param_sustain_loop_end_pct": "100",
+                "param_sustain_loop_search_number": "50",
+                "param_sustain_loop_search_unit": "%",
+                "param_sustain_crossfade_policy": "Custom",
+                "param_sustain_crossfade_custom_number": "25",
+                "param_sustain_crossfade_custom_unit": "%",
+            },
+            audio_cache,
+        )
+
+        self.assertEqual(count, 1)
+        sustain = model.read_loop(zone, "SustainLoop")
+        self.assertEqual(sustain["start"], "12000")
+        self.assertEqual(sustain["end"], "36000")
+        self.assertGreater(int(sustain["crossfade"]), 0)
+
+    def test_detect_release_loops_keeps_locked_stop_when_only_crossfade_is_checked(self):
+        sr = 48000
+        t = MODULE.np.arange(sr * 2, dtype=MODULE.np.float64) / sr
+        samples = (0.4 * MODULE.np.sin(2.0 * MODULE.np.pi * 220.0 * t)).astype(MODULE.np.float32)
+        model = FakeLoopModel(samples)
+        zone = model.get_zone(0)
+        release_loop = MODULE.child(zone, "ReleaseLoop")
+        MODULE.set_value(release_loop, "Start", 12000)
+        MODULE.set_value(release_loop, "End", 36000)
+        MODULE.set_value(release_loop, "Crossfade", "0")
+        audio_cache = FakeLoopAudioCache(model)
+
+        count = MODULE.SamplerProcessors.detect_zone_loops(
+            model,
+            {
+                "release_loop_detection": True,
+                "release_loop_write_start": False,
+                "release_loop_write_end": False,
+                "release_loop_write_mode": False,
+                "release_loop_write_crossfade": True,
+                "param_release_loop_start_pct": "99",
+                "param_release_loop_start_unit": "%",
+                "param_release_loop_search_number": "50",
+                "param_release_loop_search_unit": "%",
+                "param_release_crossfade_policy": "Custom",
+                "param_release_crossfade_custom_number": "25",
+                "param_release_crossfade_custom_unit": "%",
+                "param_release_threshold": "0.08",
+                "param_next_activity_threshold": "0.08",
+            },
+            audio_cache,
+        )
+
+        self.assertEqual(count, 1)
+        release = model.read_loop(zone, "ReleaseLoop")
+        self.assertEqual(release["start"], "12000")
+        self.assertEqual(release["end"], "36000")
+        self.assertGreater(int(release["crossfade"]), 0)
+
     def test_detect_release_loops_prefers_stable_tail_after_note_end(self):
         sr = 48000
         note_t = MODULE.np.arange(sr, dtype=MODULE.np.float64) / sr
@@ -1836,6 +2002,39 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertGreater(int(sustain["crossfade"]), 0)
         self.assertEqual(sustain["crossfade"], release["crossfade"])
 
+    def test_optimize_zone_crossfades_clamps_to_loop_start_preroll(self):
+        sr = 48000
+        t = MODULE.np.arange(sr, dtype=MODULE.np.float64) / sr
+        samples = (0.4 * MODULE.np.sin(2.0 * MODULE.np.pi * 220.0 * t)).astype(MODULE.np.float32)
+        model = FakeLoopModel(samples)
+        zone = model.get_zone(0)
+        sustain_loop = MODULE.child(zone, "SustainLoop")
+        MODULE.set_value(sustain_loop, "Start", 100)
+        MODULE.set_value(sustain_loop, "End", 2000)
+        MODULE.set_value(sustain_loop, "Crossfade", "0")
+        audio_cache = FakeLoopAudioCache(model)
+        original_optimizer = MODULE.AudioAnalysis.optimize_crossfade_samples
+        MODULE.AudioAnalysis.optimize_crossfade_samples = staticmethod(lambda *args, **kwargs: 500)
+        try:
+            count = MODULE.SamplerProcessors.optimize_zone_crossfades(
+                model,
+                {
+                    "loop_detection": True,
+                    "crossfade_optimization": True,
+                    "param_sustain_crossfade_min_number": "500",
+                    "param_sustain_crossfade_min_unit": "samples",
+                    "param_sustain_crossfade_max_number": "500",
+                    "param_sustain_crossfade_max_unit": "samples",
+                },
+                audio_cache,
+            )
+        finally:
+            MODULE.AudioAnalysis.optimize_crossfade_samples = original_optimizer
+
+        self.assertEqual(count, 1)
+        sustain = model.read_loop(zone, "SustainLoop")
+        self.assertEqual(sustain["crossfade"], "100")
+
     def test_detect_zone_loop_detunes_updates_sustain_and_release(self):
         sr = 48000
         duration = 1.0
@@ -1866,7 +2065,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
 
         model.apply_global_values(
             {
-                "param_default_loop_mode": "on",
+                "param_default_loop_mode": "loop",
                 "param_default_release_loop_mode": "back and forth",
                 "param_env_attack_ms": "12.5",
                 "param_env_decay_ms": "345",
@@ -1906,7 +2105,13 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_lfo_value::VelDst/ModConnections.0/Amount": "77",
                 "param_lfo_value::MidiCtrl.0/Feedback": "1",
             },
-            {"generic_lfo": True},
+            {
+                "param_lfo_manual::Lfo/IsOn": True,
+                "param_lfo_manual::Lfo/Slot/Value/SimplerLfo/Frequency": True,
+                "param_lfo_manual::AuxLfos.0/IsOn": True,
+                "param_lfo_value::VelDst/ModConnections.0/Amount": True,
+                "param_lfo_value::MidiCtrl.0/Feedback": True,
+            },
         )
 
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Lfo/IsOn"), "false")
@@ -1924,7 +2129,11 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_lfo_value::AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst/ModConnections.0/Amount": "17",
                 "param_lfo_value::MidiCtrl.7/Feedback": "1",
             },
-            {"generic_lfo": True},
+            {
+                "param_lfo_manual::AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency": True,
+                "param_lfo_value::AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst/ModConnections.0/Amount": True,
+                "param_lfo_value::MidiCtrl.7/Feedback": True,
+            },
         )
 
         self.assertIsNone(MODULE.get_manual_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency"))
@@ -1941,7 +2150,12 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_filter_manual::Filter/Slot/Value/SimplerFilter/Envelope/Amount": "0.25",
                 "param_filter_manual::Shaper/Slot/Value/SimplerShaper/Amount": "42",
             },
-            {"generic_filter": True},
+            {
+                "param_filter_manual::Filter/IsOn": True,
+                "param_filter_manual::Filter/Slot/Value/SimplerFilter/Freq": True,
+                "param_filter_manual::Filter/Slot/Value/SimplerFilter/Envelope/Amount": True,
+                "param_filter_manual::Shaper/Slot/Value/SimplerShaper/Amount": True,
+            },
         )
 
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Filter/IsOn"), "false")
@@ -1958,7 +2172,11 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_filter_manual::Filter/Slot/Value/SimplerFilter/Envelope/Amount": "12",
                 "param_filter_manual::Shaper/Slot/Value/SimplerShaper/Amount": "23",
             },
-            {"generic_filter": True},
+            {
+                "param_filter_manual::Filter/Slot/Value/SimplerFilter/Freq": True,
+                "param_filter_manual::Filter/Slot/Value/SimplerFilter/Envelope/Amount": True,
+                "param_filter_manual::Shaper/Slot/Value/SimplerShaper/Amount": True,
+            },
         )
 
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Filter/Slot/Value/SimplerFilter/Freq"), "987.6")
@@ -2181,9 +2399,10 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_sub_osc_manual::Player/SubOsc/Slot/Value/SimplerSubOsc/Type": "5",
             },
             {
-                "generic_aux_env": True,
-                "generic_pitch_env": True,
-                "generic_sub_osc": True,
+                "param_aux_env_manual::AuxEnv/Slot/Value/SimplerAuxEnvelope/AttackTime": True,
+                "param_aux_env_value::AuxEnv/Slot/Value/SimplerAuxEnvelope/ModDst/ModConnections.0/Amount": True,
+                "param_pitch_env_manual::Pitch/Envelope/Slot/Value/SimplerPitchEnvelope/Amount": True,
+                "param_sub_osc_manual::Player/SubOsc/Slot/Value/SimplerSubOsc/Type": True,
             },
         )
 

@@ -2,7 +2,6 @@
 done, to be tested :
 
 sorted mostly from probably quickest to more complex :
-- if "loop > start" is unchecked, the loop start should stay wherever the adv file (or default value if starting from an audio only) said it was, the value should have no impact, and same logic goes for every parameter with a checkbox on the left
 
 test or define first :
 - maybe "start placement" should be in the "start/end refinement" panel
@@ -16,3 +15,4 @@ test or define first :
 - writing a value quickly on some ui elements trigger a recomputation at each digit, what solution is to be found, small hysteresis maybe?
 - sometimes exported adv files (when created from an audio file, doesn't seem to do it with existing adv) will appear nice but when playing a long note, small "gaps" can be hears in the sound, that are not present in the sample, find out why (maybe something mistagged somewhere)
 - create a "typical refinements from already sampled adv file" template
+- write precise documentation
