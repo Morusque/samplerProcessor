@@ -120,30 +120,31 @@ DEFAULT_PITCH_WINDOW_STOP_UNIT = "%"
 WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS = 2.0
 
 SUSTAIN_MODE_VALUES = {
-    "on": "1",
-    "loop": "2",
-    "back and forth": "3",
+    "off": "0",
+    "loop": "1",
+    "back-and-forth": "2",
 }
 
 RELEASE_MODE_VALUES = {
     "off": "0",
-    "on": "1",
-    "loop": "2",
-    "back and forth": "3",
+    "loop": "3",
+    "back-and-forth": "2",
 }
 
 LEGACY_MODE_LABEL_ALIASES = {
     "no": "off",
     "No": "off",
-    "forward": "on",
-    "Forward": "on",
-    "back-and-forth": "back and forth",
-    "Back-and-forth": "back and forth",
+    "forward": "loop",
+    "Forward": "loop",
+    "on": "loop",
+    "On": "loop",
+    "back and forth": "back-and-forth",
+    "back-and-forth": "back-and-forth",
+    "Back-and-forth": "back-and-forth",
 }
 
 LOOP_CROSSFADE_POLICY_LABELS = [
     "No fade",
-    "One waveform",
     "Longest possible",
     "Custom",
 ]
@@ -652,7 +653,7 @@ DEFAULT_PRESET_SIMPLE_SECTIONS = [
             {"kind": "bool", "label": "Aux env on", "key": "aux_env_on", "update": "aux_env_on", "storage": "manual", "path": "AuxEnv/IsOn", "default": False},
             {"kind": "entry", "label": "Spread amount", "key": "globals_spread_amount", "update": "globals_spread_amount", "storage": "manual", "path": "Globals/SpreadAmount", "default": "0"},
             {"kind": "choice", "label": "Portamento mode", "key": "globals_portamento_mode", "update": "globals_portamento_mode", "storage": "manual", "path": "Globals/PortamentoMode", "default": "off", "enum_id": "portamento_mode"},
-            {"kind": "entry", "label": "Portamento time", "key": "globals_portamento_time", "update": "globals_portamento_time", "storage": "manual", "path": "Globals/PortamentoTime", "default": "50"},
+            {"kind": "entry", "label": "Portamento time", "key": "globals_portamento_time", "update": "globals_portamento_time", "storage": "manual", "path": "Globals/PortamentoTime", "default": "10"},
             {"kind": "entry", "label": "Env scale time", "key": "globals_env_scale_time", "update": "globals_env_scale_time", "storage": "manual", "path": "Globals/EnvScale/EnvTime", "default": "0"},
             {"kind": "entry", "label": "Env time key scale", "key": "globals_env_time_key_scale", "update": "globals_env_time_key_scale", "storage": "manual", "path": "Globals/EnvScale/EnvTimeKeyScale", "default": "0"},
             {"kind": "bool", "label": "Env include attack", "key": "globals_env_include_attack", "update": "globals_env_include_attack", "storage": "manual", "path": "Globals/EnvScale/EnvTimeIncludeAttack", "default": True},
@@ -789,7 +790,15 @@ def ensure_child(parent, tag):
     node = child(parent, tag)
     if node is None:
         node = ET.SubElement(parent, tag)
-        if tag in ("SimplerLfo", "SimplerFilter", "SimplerShaper"):
+        if tag in (
+            "SimplerLfo",
+            "SimplerAuxLfo",
+            "SimplerFilter",
+            "SimplerShaper",
+            "SimplerAuxEnvelope",
+            "SimplerPitchEnvelope",
+            "SimplerSubOsc",
+        ):
             node.set("Id", "0")
     return node
 
@@ -995,7 +1004,24 @@ def loop_mode_value_from_label(prefix, label):
 def loop_mode_label_from_value(prefix, value):
     raw = str(value or "").strip()
     values = loop_mode_values_for_prefix(prefix)
+    if raw == "1" and str(prefix).strip().lower() == "release":
+        return "loop"
     return next((label for label, mapped in values.items() if mapped == raw), raw)
+
+
+def migrate_loop_write_flags(data, processing_update):
+    source = data.get("processing_update", {}) if isinstance(data, dict) else {}
+    for expand_key, write_keys in (
+        ("loop_detection", ("loop_write_start", "loop_write_end", "loop_write_mode", "loop_write_crossfade")),
+        ("release_loop_detection", ("release_loop_write_start", "release_loop_write_end", "release_loop_write_mode", "release_loop_write_crossfade")),
+    ):
+        if not source.get(expand_key, False):
+            continue
+        if any(key in source for key in write_keys):
+            continue
+        for key in write_keys:
+            if key in processing_update:
+                processing_update[key].set(True)
 
 
 def list_value_parameter_paths(root, base_path):
@@ -2332,12 +2358,17 @@ class AudioAnalysis:
         return int(round(value))
 
     @staticmethod
-    def parse_number_unit_samples(number_text, unit_text, sample_rate, zone_length, tempo_bpm=None):
+    def parse_number_unit_samples(number_text, unit_text, sample_rate, zone_length, tempo_bpm=None, pitch_hz=None):
         value = parse_number_from_text(number_text, 0.0)
         unit = str(unit_text or "samples").strip().lower()
 
         if "%" in unit:
             return int(round(zone_length * value / 100.0))
+
+        if unit in ("wavecycle", "wavecycles", "wave cycle", "wave cycles"):
+            if pitch_hz and pitch_hz > 0:
+                return int(round((sample_rate / float(pitch_hz)) * value))
+            return int(round((sample_rate / 220.0) * value))
 
         if unit in ("ms", "millisecond", "milliseconds"):
             return int(round(sample_rate * value / 1000.0))
@@ -2982,6 +3013,7 @@ class AudioAnalysis:
             custom_unit,
             sample_rate,
             loop_length,
+            pitch_hz=pitch_hz,
         )
         return max(0, min(loop_length // 2, int(custom)))
 
@@ -4035,7 +4067,22 @@ class SamplerProcessors:
                 ("ReleaseLoop", "release", "release"),
             ):
                 flag_key = "loop_detection" if prefix == "sustain" else "release_loop_detection"
-                if not params.get(flag_key, False):
+                write_prefix = "loop" if prefix == "sustain" else "release_loop"
+                write_keys = (
+                    "{}_write_start".format(write_prefix),
+                    "{}_write_end".format(write_prefix),
+                    "{}_write_mode".format(write_prefix),
+                    "{}_write_crossfade".format(write_prefix),
+                )
+                has_write_flags = any(key in params for key in write_keys)
+                if not has_write_flags and not params.get(flag_key, False):
+                    continue
+                write_start = bool(params.get("{}_write_start".format(write_prefix), True))
+                write_end = bool(params.get("{}_write_end".format(write_prefix), True))
+                write_mode = bool(params.get("{}_write_mode".format(write_prefix), True))
+                write_crossfade = bool(params.get("{}_write_crossfade".format(write_prefix), True))
+                if not (write_start or write_end or write_mode or write_crossfade):
+                    log("Loop detection: no {} loop fields are selected for writing.\n".format(loop_label))
                     continue
 
                 default_search_number = "25" if prefix == "sustain" else "10"
@@ -4084,12 +4131,14 @@ class SamplerProcessors:
                         search_range_unit,
                         audio.sample_rate,
                         basis_span,
+                        pitch_hz=pitch_hz,
                     )
                     target_offset = AudioAnalysis.parse_number_unit_samples(
                         start_number,
                         start_unit,
                         audio.sample_rate,
                         basis_span,
+                        pitch_hz=pitch_hz,
                     )
                     target_start_sample = int(basis_start) + int(target_offset)
                     loop_info = AudioAnalysis.find_release_loop_to_sample_end(
@@ -4110,18 +4159,21 @@ class SamplerProcessors:
                         search_range_unit,
                         audio.sample_rate,
                         len(audio.samples),
+                        pitch_hz=pitch_hz,
                     )
                     target_start_sample = AudioAnalysis.parse_number_unit_samples(
                         start_number,
                         start_unit,
                         audio.sample_rate,
                         len(audio.samples),
+                        pitch_hz=pitch_hz,
                     )
                     target_end_sample = AudioAnalysis.parse_number_unit_samples(
                         end_number,
                         end_unit,
                         audio.sample_rate,
                         len(audio.samples),
+                        pitch_hz=pitch_hz,
                     )
                     loop_info = AudioAnalysis.find_loop_points(
                         audio.samples,
@@ -4153,10 +4205,14 @@ class SamplerProcessors:
                     loop_vals.get("mode", ""),
                     loop_vals.get("crossfade", ""),
                 )
-                loop_vals["start"] = str(loop_start)
-                loop_vals["end"] = str(loop_end)
-                loop_vals["mode"] = str(mode_value)
-                loop_vals["crossfade"] = str(crossfade)
+                if write_start:
+                    loop_vals["start"] = str(loop_start)
+                if write_end:
+                    loop_vals["end"] = str(loop_end)
+                if write_mode:
+                    loop_vals["mode"] = str(mode_value)
+                if write_crossfade:
+                    loop_vals["crossfade"] = str(crossfade)
                 model.write_loop(zone, loop_tag, loop_vals)
                 after = (
                     loop_vals["start"],
@@ -5552,10 +5608,36 @@ class SamplerProcessors:
             )
             model.refresh()
 
-        if processing_update.get("loop_detection", False) or processing_update.get("release_loop_detection", False):
+        loop_write_keys = (
+            "loop_write_start",
+            "loop_write_end",
+            "loop_write_mode",
+            "loop_write_crossfade",
+        )
+        release_loop_write_keys = (
+            "release_loop_write_start",
+            "release_loop_write_end",
+            "release_loop_write_mode",
+            "release_loop_write_crossfade",
+        )
+        loop_detection_enabled = (
+            any(bool(processing_update.get(key, False)) for key in loop_write_keys)
+            if any(key in processing_update for key in loop_write_keys)
+            else processing_update.get("loop_detection", False)
+        )
+        release_loop_detection_enabled = (
+            any(bool(processing_update.get(key, False)) for key in release_loop_write_keys)
+            if any(key in processing_update for key in release_loop_write_keys)
+            else processing_update.get("release_loop_detection", False)
+        )
+
+        if loop_detection_enabled or release_loop_detection_enabled:
             loop_flags = dict(global_values)
-            loop_flags["loop_detection"] = processing_update.get("loop_detection", False)
-            loop_flags["release_loop_detection"] = processing_update.get("release_loop_detection", False)
+            loop_flags["loop_detection"] = loop_detection_enabled
+            loop_flags["release_loop_detection"] = release_loop_detection_enabled
+            for key in loop_write_keys + release_loop_write_keys:
+                if key in processing_update:
+                    loop_flags[key] = processing_update.get(key, True)
             total_changes += SamplerProcessors.detect_zone_loops(
                 model,
                 loop_flags,
@@ -6139,6 +6221,32 @@ class SamplerAdvGui:
         add_tooltip(cb, tooltip)
         return var
 
+    def _expander_row(self, parent, row, label, key, tooltip=""):
+        var = tk.BooleanVar(value=False)
+        self.processing_update[key] = var
+        btn = ttk.Button(parent, text=">", width=3)
+        btn.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=2)
+        lab = ttk.Label(parent, text=label)
+        lab.grid(row=row, column=1, columnspan=2, sticky="w", padx=4, pady=2)
+        add_tooltip(btn, tooltip)
+        add_tooltip(lab, tooltip)
+
+        def toggle():
+            var.set(not bool(var.get()))
+            btn.configure(text="v" if var.get() else ">")
+
+        btn.configure(command=toggle)
+
+        def sync(*_args):
+            btn.configure(text="v" if var.get() else ">")
+
+        try:
+            var.trace_add("write", sync)
+        except Exception:
+            pass
+        sync()
+        return var
+
     def _inline_params_row(self, parent, row, items, store=None, tooltip=""):
         if store is None:
             store = self.global_vars
@@ -6311,6 +6419,52 @@ class SamplerAdvGui:
         add_tooltip(combo, tooltip)
 
         return number_var, unit_var
+
+    def _checked_number_unit_row(self, parent, row, label, checkbox_key, number_key, unit_key, default_number, default_unit, units, tooltip=""):
+        cb_var = tk.BooleanVar(value=True)
+        self.processing_update[checkbox_key] = cb_var
+        cb = ttk.Checkbutton(parent, variable=cb_var)
+        cb.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
+        add_tooltip(cb, tooltip)
+
+        lab = ttk.Label(parent, text=label)
+        lab.grid(row=row, column=1, sticky="w", padx=4, pady=3)
+        add_tooltip(lab, tooltip)
+
+        number_var = tk.StringVar(value=default_number)
+        unit_var = tk.StringVar(value=default_unit)
+        self.global_vars[number_key] = number_var
+        self.global_vars[unit_key] = unit_var
+
+        frame = ttk.Frame(parent)
+        frame.grid(row=row, column=2, sticky="ew", padx=4, pady=3)
+
+        entry = ttk.Entry(frame, textvariable=number_var, width=10)
+        entry.pack(side="left")
+        add_tooltip(entry, tooltip)
+
+        combo = ttk.Combobox(frame, textvariable=unit_var, values=units, state="readonly", width=10)
+        combo.pack(side="left", padx=(6, 0))
+        add_tooltip(combo, tooltip)
+        return cb_var, number_var, unit_var
+
+    def _checked_choice_row(self, parent, row, label, checkbox_key, choice_key, choices, default, tooltip=""):
+        cb_var = tk.BooleanVar(value=True)
+        self.processing_update[checkbox_key] = cb_var
+        cb = ttk.Checkbutton(parent, variable=cb_var)
+        cb.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
+        add_tooltip(cb, tooltip)
+
+        lab = ttk.Label(parent, text=label)
+        lab.grid(row=row, column=1, sticky="w", padx=4, pady=3)
+        add_tooltip(lab, tooltip)
+
+        choice_var = tk.StringVar(value=default)
+        self.global_vars[choice_key] = choice_var
+        combo = ttk.Combobox(parent, textvariable=choice_var, values=choices, state="readonly")
+        combo.grid(row=row, column=2, sticky="ew", padx=4, pady=3)
+        add_tooltip(combo, tooltip)
+        return cb_var, choice_var
 
     def _number_unit_tempo_row(self, parent, row, label, number_key, unit_key, tempo_key, default_number, default_unit, default_tempo, units, tooltip=""):
         lab = ttk.Label(parent, text=label)
@@ -6710,40 +6864,43 @@ class SamplerAdvGui:
         self._register_visibility_rule(normalize_var, normalize_options)
         prow += 1
 
-        loop_var = self._checkbox_row(per_zone_box, prow, "Loop", "loop_detection", tooltip="Detect sustain loop start/end from the current zone audio.", command=self._refresh_visibility_rules)
+        loop_var = self._expander_row(per_zone_box, prow, "Loop", "loop_detection", tooltip="Show sustain-loop parameters.")
         prow += 1
         loop_options = ttk.Frame(per_zone_box)
         loop_options.grid(row=prow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         loop_options.columnconfigure(2, weight=1)
         subrow = 0
-        self._number_unit_row(
+        self._checked_number_unit_row(
             loop_options,
             subrow,
             "Start",
+            "loop_write_start",
             "param_sustain_loop_start_pct",
             "param_sustain_loop_start_unit",
             "50",
             "%",
-            ["%", "samples", "ms", "sec"],
+            ["%", "wavecycle", "samples", "ms", "sec"],
             tooltip="Sustain loop start target inside the duration between zone start and stop."
         )
         subrow += 1
-        self._number_unit_row(
+        self._checked_number_unit_row(
             loop_options,
             subrow,
-            "End",
+            "Stop",
+            "loop_write_end",
             "param_sustain_loop_end_pct",
             "param_sustain_loop_end_unit",
             "75",
             "%",
-            ["%", "samples", "ms", "sec"],
+            ["%", "wavecycle", "samples", "ms", "sec"],
             tooltip="Sustain loop end target inside the duration between zone start and stop."
         )
         subrow += 1
-        sustain_crossfade_policy_var = self._choice_row(
+        sustain_crossfade_write_var, sustain_crossfade_policy_var = self._checked_choice_row(
             loop_options,
             subrow,
             "Crossfade",
+            "loop_write_crossfade",
             "param_sustain_crossfade_policy",
             LOOP_CROSSFADE_POLICY_LABELS,
             "No fade",
@@ -6751,7 +6908,7 @@ class SamplerAdvGui:
         )
         subrow += 1
         sustain_crossfade_custom = ttk.Frame(loop_options)
-        sustain_crossfade_custom.grid(row=subrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        sustain_crossfade_custom.grid(row=subrow, column=1, columnspan=2, sticky="ew", padx=0, pady=0)
         sustain_crossfade_custom.columnconfigure(2, weight=1)
         self._number_unit_row(
             sustain_crossfade_custom,
@@ -6761,13 +6918,18 @@ class SamplerAdvGui:
             "param_sustain_crossfade_custom_unit",
             "25",
             "%",
-            ["%", "samples", "ms"],
+            ["%", "wavecycle", "samples", "ms"],
             tooltip="Used only when Crossfade is set to Custom."
         )
         self._register_visibility_rule(
             sustain_crossfade_policy_var,
             sustain_crossfade_custom,
-            predicate=lambda value: str(value).strip() == "Custom"
+            predicate=lambda value: bool(sustain_crossfade_write_var.get()) and str(value).strip() == "Custom"
+        )
+        self._register_visibility_rule(
+            sustain_crossfade_write_var,
+            sustain_crossfade_custom,
+            predicate=lambda value: bool(value) and str(sustain_crossfade_policy_var.get()).strip() == "Custom"
         )
         subrow += 1
         self._number_unit_row(
@@ -6778,18 +6940,18 @@ class SamplerAdvGui:
             "param_sustain_loop_search_unit",
             "25",
             "%",
-            ["%", "samples", "ms"],
+            ["%", "wavecycle", "samples", "ms"],
             tooltip="How far the sustain-loop search is allowed to move away from the target percentages while optimizing the seam."
         )
         subrow += 1
-        self._choice_row(loop_options, subrow, "Type", "param_sustain_loop_mode", list(SUSTAIN_MODE_VALUES.keys()), "on", tooltip="Mode written to the sustain section when detection finds a usable result.")
+        self._checked_choice_row(loop_options, subrow, "Type", "loop_write_mode", "param_sustain_loop_mode", list(SUSTAIN_MODE_VALUES.keys()), "loop", tooltip="Mode written to the sustain section when detection finds a usable result.")
         subrow += 1
         self._checkbox_row(loop_options, subrow, "Detect loop detunes", "loop_detune_detection", tooltip="Estimate sustain-loop detune from the looped audio itself and write the sustain loop Detune field.")
         subrow += 1
         self._register_visibility_rule(loop_var, loop_options)
         prow += 1
 
-        release_loop_var = self._checkbox_row(per_zone_box, prow, "Release loop", "release_loop_detection", tooltip="Enable release-loop processing and preview. When active, the tool detects release-loop points from the stable tail after the played note has ended.", command=self._refresh_visibility_rules)
+        release_loop_var = self._expander_row(per_zone_box, prow, "Release loop", "release_loop_detection", tooltip="Show release-loop parameters.")
         prow += 1
         release_loop_options = ttk.Frame(per_zone_box)
         release_loop_options.grid(row=prow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -6805,22 +6967,36 @@ class SamplerAdvGui:
             tooltip="Release-loop end is always the sample end. This chooses the span used to interpret the Start value."
         )
         subrow += 1
-        self._number_unit_row(
+        self._checked_number_unit_row(
             release_loop_options,
             subrow,
             "Start",
+            "release_loop_write_start",
             "param_release_loop_start_pct",
             "param_release_loop_start_unit",
             "85",
             "%",
-            ["%", "samples", "ms", "sec"],
+            ["%", "wavecycle", "samples", "ms", "sec"],
             tooltip="Release-loop end is always the sample end. % is relative to the chosen base span, and signed values are allowed."
         )
         subrow += 1
-        release_crossfade_policy_var = self._choice_row(
+        release_stop_var = tk.BooleanVar(value=True)
+        self.processing_update["release_loop_write_end"] = release_stop_var
+        release_stop_cb = ttk.Checkbutton(release_loop_options, variable=release_stop_var)
+        release_stop_cb.grid(row=subrow, column=0, sticky="w", padx=(4, 0), pady=3)
+        add_tooltip(release_stop_cb, "Write the release-loop stop value. Release-loop stop is the sample stop.")
+        release_stop_label = ttk.Label(release_loop_options, text="Stop")
+        release_stop_label.grid(row=subrow, column=1, sticky="w", padx=4, pady=3)
+        add_tooltip(release_stop_label, "Write the release-loop stop value. Release-loop stop is the sample stop.")
+        release_stop_value = ttk.Label(release_loop_options, text="sample stop")
+        release_stop_value.grid(row=subrow, column=2, sticky="w", padx=4, pady=3)
+        add_tooltip(release_stop_value, "Write the release-loop stop value. Release-loop stop is the sample stop.")
+        subrow += 1
+        release_crossfade_write_var, release_crossfade_policy_var = self._checked_choice_row(
             release_loop_options,
             subrow,
             "Crossfade",
+            "release_loop_write_crossfade",
             "param_release_crossfade_policy",
             LOOP_CROSSFADE_POLICY_LABELS,
             "No fade",
@@ -6828,7 +7004,7 @@ class SamplerAdvGui:
         )
         subrow += 1
         release_crossfade_custom = ttk.Frame(release_loop_options)
-        release_crossfade_custom.grid(row=subrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        release_crossfade_custom.grid(row=subrow, column=1, columnspan=2, sticky="ew", padx=0, pady=0)
         release_crossfade_custom.columnconfigure(2, weight=1)
         self._number_unit_row(
             release_crossfade_custom,
@@ -6838,13 +7014,18 @@ class SamplerAdvGui:
             "param_release_crossfade_custom_unit",
             "25",
             "%",
-            ["%", "samples", "ms"],
+            ["%", "wavecycle", "samples", "ms"],
             tooltip="Used only when Crossfade is set to Custom."
         )
         self._register_visibility_rule(
             release_crossfade_policy_var,
             release_crossfade_custom,
-            predicate=lambda value: str(value).strip() == "Custom"
+            predicate=lambda value: bool(release_crossfade_write_var.get()) and str(value).strip() == "Custom"
+        )
+        self._register_visibility_rule(
+            release_crossfade_write_var,
+            release_crossfade_custom,
+            predicate=lambda value: bool(value) and str(release_crossfade_policy_var.get()).strip() == "Custom"
         )
         subrow += 1
         self._number_unit_row(
@@ -6855,11 +7036,11 @@ class SamplerAdvGui:
             "param_release_loop_search_unit",
             "10",
             "%",
-            ["%", "samples", "ms"],
+            ["%", "wavecycle", "samples", "ms"],
             tooltip="How far the release-loop search is allowed to move away from the target percentage while optimizing the seam."
         )
         subrow += 1
-        self._choice_row(release_loop_options, subrow, "Release mode", "param_release_loop_mode", list(RELEASE_MODE_VALUES.keys()), "on", tooltip="Mode written to the release section when detection finds a usable result.")
+        self._checked_choice_row(release_loop_options, subrow, "Type", "release_loop_write_mode", "param_release_loop_mode", list(RELEASE_MODE_VALUES.keys()), "loop", tooltip="Mode written to the release section when detection finds a usable result.")
         subrow += 1
         self._checkbox_row(release_loop_options, subrow, "Detect release loop detunes", "release_loop_detune_detection", tooltip="Estimate release-loop detune from the looped audio itself and write the release loop Detune field.")
         subrow += 1
@@ -7294,6 +7475,10 @@ class SamplerAdvGui:
             values = data.get(store_name, {})
             for k, val in values.items():
                 if k in store:
+                    if k == "param_sustain_loop_mode":
+                        val = normalize_mode_label(val)
+                    elif k == "param_release_loop_mode":
+                        val = normalize_mode_label(val)
                     store[k].set(val)
 
         for store_name, store in [
@@ -7304,6 +7489,8 @@ class SamplerAdvGui:
             for k, val in values.items():
                 if k in store:
                     store[k].set(bool(val))
+
+        migrate_loop_write_flags(data, self.processing_update)
 
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
@@ -7997,8 +8184,10 @@ class SamplerAdvGui:
             "refine": bool(self.processing_update.get("start_end_refine", tk.BooleanVar(value=False)).get()),
             "sustain_loop": bool(self.processing_update.get("loop_detection", tk.BooleanVar(value=False)).get()),
             "release_loop": bool(self.processing_update.get("release_loop_detection", tk.BooleanVar(value=False)).get()),
-            "sustain_crossfade": bool(self.processing_update.get("loop_detection", tk.BooleanVar(value=False)).get()),
-            "release_crossfade": bool(self.processing_update.get("release_loop_detection", tk.BooleanVar(value=False)).get()),
+            "sustain_crossfade": bool(self.processing_update.get("loop_detection", tk.BooleanVar(value=False)).get())
+            and bool(self.processing_update.get("loop_write_crossfade", tk.BooleanVar(value=True)).get()),
+            "release_crossfade": bool(self.processing_update.get("release_loop_detection", tk.BooleanVar(value=False)).get())
+            and bool(self.processing_update.get("release_loop_write_crossfade", tk.BooleanVar(value=True)).get()),
         }
 
     def current_detection_split_preview(self, samples, sample_rate):
@@ -8174,6 +8363,7 @@ class SamplerAdvGui:
                 search_range_unit,
                 sample_rate,
                 basis_span,
+                pitch_hz=pitch_hz,
             )
             search_range_samples = min(int(search_range_samples), int(sample_rate * WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS))
             target_offset = AudioAnalysis.parse_number_unit_samples(
@@ -8181,6 +8371,7 @@ class SamplerAdvGui:
                 start_unit,
                 sample_rate,
                 basis_span,
+                pitch_hz=pitch_hz,
             )
             target_start_sample = int(basis_start) + int(target_offset)
             loop_info = AudioAnalysis.find_release_loop_to_sample_end(
@@ -8201,6 +8392,7 @@ class SamplerAdvGui:
                 search_range_unit,
                 sample_rate,
                 len(slice_samples),
+                pitch_hz=pitch_hz,
             )
             search_range_samples = min(int(search_range_samples), int(sample_rate * WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS))
             target_start_sample = AudioAnalysis.parse_number_unit_samples(
@@ -8208,12 +8400,14 @@ class SamplerAdvGui:
                 start_unit,
                 sample_rate,
                 len(slice_samples),
+                pitch_hz=pitch_hz,
             )
             target_end_sample = AudioAnalysis.parse_number_unit_samples(
                 end_number,
                 end_unit,
                 sample_rate,
                 len(slice_samples),
+                pitch_hz=pitch_hz,
             )
             loop_info = AudioAnalysis.find_loop_points(
                 slice_samples,
@@ -8634,10 +8828,12 @@ class SamplerAdvGui:
 
         slice_bounds, onsets, grid_markers = self.current_preview_slice_bounds(zone_audio, samples, overlay_flags)
         slice_annotations = self.current_preview_slice_annotations(slice_bounds, samples, zone_audio.sample_rate)
+        loop_slice_bounds = list(slice_bounds)
         lane_bottom = bottom
         lane_height = 8
 
         if overlay_flags["refine"]:
+            refined_slice_bounds = []
             release_threshold, release_tail_margin, next_activity_threshold, shift_start, shift_stop = self.current_refine_preview_params(
                 zone_audio.sample_rate,
                 len(samples),
@@ -8669,6 +8865,7 @@ class SamplerAdvGui:
                 raw_rel_end = max(raw_rel_start + 1, min(rel_end, len(slice_samples)))
                 rel_start = max(0, min(raw_rel_start + shift_start, len(slice_samples) - 1))
                 rel_end = max(rel_start + 1, min(raw_rel_end + shift_stop, len(slice_samples)))
+                refined_slice_bounds.append((int(slice_start + rel_start), int(slice_start + rel_end)))
                 raw_abs_start = zone_audio.zone_start + slice_start + raw_rel_start
                 raw_abs_end = zone_audio.zone_start + slice_start + raw_rel_end
                 abs_start = zone_audio.zone_start + slice_start + rel_start
@@ -8696,6 +8893,8 @@ class SamplerAdvGui:
                 if len(slice_bounds) == 1 or slice_index == 0:
                     canvas.create_text(start_x + 3, top + 10, anchor="w", text="start", fill="#53c98b", font=("", 8))
                     canvas.create_text(end_x - 3, top + 10, anchor="e", text="stop", fill="#53c98b", font=("", 8))
+            if refined_slice_bounds:
+                loop_slice_bounds = refined_slice_bounds
 
         peak = float(np.max(np.abs(display_samples)))
         if peak <= 1e-9:
@@ -8719,10 +8918,15 @@ class SamplerAdvGui:
 
         predicted_sustain_loops = []
         predicted_release_loops = []
-        use_predicted_slice_loops = overlay_flags["split_detection"] or overlay_flags["split_gate"] or overlay_flags["split_grid"]
+        use_predicted_slice_loops = (
+            overlay_flags["split_detection"]
+            or overlay_flags["split_gate"]
+            or overlay_flags["split_grid"]
+            or overlay_flags["refine"]
+        )
         if overlay_flags["sustain_loop"] or overlay_flags["sustain_crossfade"]:
             if use_predicted_slice_loops:
-                for slice_start, slice_end in slice_bounds:
+                for slice_start, slice_end in loop_slice_bounds:
                     slice_samples = samples[slice_start:slice_end]
                     if len(slice_samples) == 0:
                         continue
@@ -8734,7 +8938,9 @@ class SamplerAdvGui:
                             int(slice_start),
                             int(slice_end),
                             self.global_vars.get("param_sustain_loop_start_pct", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_sustain_loop_start_unit", tk.StringVar(value="%")).get(),
                             self.global_vars.get("param_sustain_loop_end_pct", tk.StringVar(value="75")).get(),
+                            self.global_vars.get("param_sustain_loop_end_unit", tk.StringVar(value="%")).get(),
                             self.global_vars.get("param_sustain_loop_search_number", tk.StringVar(value="25")).get(),
                             self.global_vars.get("param_sustain_loop_search_unit", tk.StringVar(value="%")).get(),
                             self.global_vars.get("param_sustain_crossfade_policy", tk.StringVar(value="No fade")).get(),
@@ -8755,7 +8961,9 @@ class SamplerAdvGui:
                         0,
                         len(samples),
                         self.global_vars.get("param_sustain_loop_start_pct", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_sustain_loop_start_unit", tk.StringVar(value="%")).get(),
                         self.global_vars.get("param_sustain_loop_end_pct", tk.StringVar(value="75")).get(),
+                        self.global_vars.get("param_sustain_loop_end_unit", tk.StringVar(value="%")).get(),
                         self.global_vars.get("param_sustain_loop_search_number", tk.StringVar(value="25")).get(),
                         self.global_vars.get("param_sustain_loop_search_unit", tk.StringVar(value="%")).get(),
                         self.global_vars.get("param_sustain_crossfade_policy", tk.StringVar(value="No fade")).get(),
@@ -8770,7 +8978,7 @@ class SamplerAdvGui:
 
         if overlay_flags["release_loop"] or overlay_flags["release_crossfade"]:
             if use_predicted_slice_loops:
-                for idx, (slice_start, slice_end) in enumerate(slice_bounds):
+                for idx, (slice_start, slice_end) in enumerate(loop_slice_bounds):
                     slice_samples = samples[slice_start:slice_end]
                     if len(slice_samples) == 0:
                         continue
@@ -8788,6 +8996,7 @@ class SamplerAdvGui:
                             int(slice_end),
                             self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
                             self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
+                            self.global_vars.get("param_release_loop_start_unit", tk.StringVar(value="%")).get(),
                             self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
                             self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
                             self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
@@ -8815,6 +9024,7 @@ class SamplerAdvGui:
                         len(samples),
                         self.global_vars.get("param_release_loop_start_reference", tk.StringVar(value="note-end to end")).get(),
                         self.global_vars.get("param_release_loop_start_pct", tk.StringVar(value="25")).get(),
+                        self.global_vars.get("param_release_loop_start_unit", tk.StringVar(value="%")).get(),
                         self.global_vars.get("param_release_loop_search_number", tk.StringVar(value="10")).get(),
                         self.global_vars.get("param_release_loop_search_unit", tk.StringVar(value="%")).get(),
                         self.global_vars.get("param_release_crossfade_policy", tk.StringVar(value="No fade")).get(),
@@ -8858,7 +9068,7 @@ class SamplerAdvGui:
                         outline="",
                         stipple="gray25",
                     )
-                    if len(slice_bounds) == 1 or entry_index == 0:
+                    if len(loop_slice_bounds) == 1 or entry_index == 0:
                         canvas.create_text(start_x + 4, lane_top - 2, anchor="w", text=label, fill=fill, font=("", 8, "bold"))
                     detune_value = int(loop_vals.get("detune", 0) or 0)
                     if detune_value != 0:
@@ -9279,9 +9489,9 @@ class SamplerAdvGui:
         self.global_vars["rr_mode"].set(ROUND_ROBIN_MODE_VALUE_TO_LABEL.get(g["round_robin_mode"], g["round_robin_mode"]))
         self.global_vars["rr_reset"].set(ROUND_ROBIN_RESET_VALUE_TO_LABEL.get(g["round_robin_reset_period"], g["round_robin_reset_period"]))
         self.global_vars["rr_seed"].set(g["round_robin_random_seed"])
-        if "param_default_loop_mode" in self.global_vars and g.get("default_loop_mode", "") in SUSTAIN_MODE_VALUES.values():
+        if "param_default_loop_mode" in self.global_vars and g.get("default_loop_mode", ""):
             self.global_vars["param_default_loop_mode"].set(loop_mode_label_from_value("sustain", g["default_loop_mode"]))
-        if "param_default_release_loop_mode" in self.global_vars and g.get("default_release_loop_mode", "") in RELEASE_MODE_VALUES.values():
+        if "param_default_release_loop_mode" in self.global_vars and g.get("default_release_loop_mode", ""):
             self.global_vars["param_default_release_loop_mode"].set(loop_mode_label_from_value("release", g["default_release_loop_mode"]))
         for summary_key, global_key in (
             ("env_attack_ms", "param_env_attack_ms"),

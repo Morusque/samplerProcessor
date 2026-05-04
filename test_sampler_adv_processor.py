@@ -979,6 +979,44 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.AudioAnalysis.parse_number_unit_samples("10", "%", 48000, 5000), 500)
         self.assertEqual(MODULE.AudioAnalysis.parse_number_unit_samples("2", "beat(s)", 48000, 5000, tempo_bpm="120"), 48000)
 
+    def test_loop_mode_labels_match_validated_adv_values(self):
+        self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "loop"), "1")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "loop"), "3")
+        self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "forward"), "1")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "on"), "3")
+        self.assertEqual(MODULE.loop_mode_value_from_label("sustain", "back and forth"), "2")
+        self.assertEqual(MODULE.loop_mode_value_from_label("release", "back-and-forth"), "2")
+        self.assertEqual(MODULE.loop_mode_label_from_value("sustain", "1"), "loop")
+        self.assertEqual(MODULE.loop_mode_label_from_value("release", "3"), "loop")
+        self.assertEqual(MODULE.loop_mode_label_from_value("sustain", "2"), "back-and-forth")
+        self.assertEqual(MODULE.loop_mode_label_from_value("release", "2"), "back-and-forth")
+
+    def test_migrate_loop_write_flags_preserves_old_loop_templates(self):
+        processing_update = {
+            "loop_write_start": FakeVar(False),
+            "loop_write_end": FakeVar(False),
+            "loop_write_mode": FakeVar(False),
+            "loop_write_crossfade": FakeVar(False),
+            "release_loop_write_start": FakeVar(False),
+            "release_loop_write_end": FakeVar(False),
+            "release_loop_write_mode": FakeVar(False),
+            "release_loop_write_crossfade": FakeVar(False),
+        }
+
+        MODULE.migrate_loop_write_flags(
+            {"processing_update": {"loop_detection": True, "release_loop_detection": True}},
+            processing_update,
+        )
+
+        self.assertTrue(all(var.get() for var in processing_update.values()))
+
+        processing_update["loop_write_start"].set(False)
+        MODULE.migrate_loop_write_flags(
+            {"processing_update": {"loop_detection": True, "loop_write_start": False}},
+            processing_update,
+        )
+        self.assertFalse(processing_update["loop_write_start"].get())
+
     def test_frequency_to_midi_parts_respects_diapason(self):
         _midi_float, root_key, cents = MODULE.AudioAnalysis.frequency_to_midi_parts(432.0, diapason_hz=432.0)
         self.assertEqual(root_key, 69)
@@ -1061,7 +1099,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         stored_detune = float(MODULE.parse_number_from_text(MODULE.get_value(zone, "Detune", "0"), 0))
         self.assertLess(abs(midi_float - (stored_root + (stored_detune / 100.0))), 2.0)
 
-    def test_detect_pitch_hz_recorder_flute_corpus_has_no_large_outliers(self):
+    def test_detect_pitch_hz_validated_recorder_flute_corpus_has_no_large_outliers(self):
         corpus = [
             ("adv presets/acoustic wood recorder flute 01.adv", "Samples/Imported/2024 12 09 flute 01.wav"),
             ("adv presets/tenor plastic recorder 01.adv", "Samples/Imported/tenor recorder 01.wav"),
@@ -1087,7 +1125,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 stored_detune = float(MODULE.parse_number_from_text(MODULE.get_value(zone, "Detune", "0"), 0))
                 errors.append(midi_float - (stored_root + (stored_detune / 100.0)))
             max_abs_errors.append(max(abs(err) for err in errors))
-        self.assertLess(max(max_abs_errors), 2.0)
+        self.assertLess(max(max_abs_errors), 1.25)
 
     def test_find_loop_points_snaps_flute_zone_to_zero_crossings(self):
         adv_path = Path(__file__).with_name("testPresets01 Project") / "adv presets" / "acoustic wood recorder flute 01.adv"
@@ -1621,7 +1659,8 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         release = model.read_loop(model.get_zone(0), "ReleaseLoop")
         self.assertNotEqual(sustain["start"], release["start"])
         self.assertEqual(int(release["end"]), len(samples))
-        self.assertEqual(sustain["mode"], release["mode"])
+        self.assertEqual(sustain["mode"], MODULE.SUSTAIN_MODE_VALUES["loop"])
+        self.assertEqual(release["mode"], MODULE.RELEASE_MODE_VALUES["loop"])
         self.assertGreater(int(sustain["end"]), int(sustain["start"]))
 
     def test_detect_zone_loops_respects_loop_mode_labels(self):
@@ -1657,8 +1696,42 @@ class SamplerAdvProcessorTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         zone = model.get_zone(0)
-        self.assertEqual(model.read_loop(zone, "SustainLoop")["mode"], MODULE.SUSTAIN_MODE_VALUES["back and forth"])
+        self.assertEqual(model.read_loop(zone, "SustainLoop")["mode"], MODULE.SUSTAIN_MODE_VALUES["back-and-forth"])
         self.assertEqual(model.read_loop(zone, "ReleaseLoop")["mode"], MODULE.RELEASE_MODE_VALUES["off"])
+
+    def test_detect_zone_loops_respects_per_field_write_flags(self):
+        sr = 48000
+        t = MODULE.np.arange(sr * 2, dtype=MODULE.np.float64) / sr
+        samples = (0.4 * MODULE.np.sin(2.0 * MODULE.np.pi * 220.0 * t)).astype(MODULE.np.float32)
+        model = FakeLoopModel(samples)
+        audio_cache = FakeLoopAudioCache(model)
+
+        count = MODULE.SamplerProcessors.detect_zone_loops(
+            model,
+            {
+                "loop_detection": True,
+                "loop_write_start": False,
+                "loop_write_end": False,
+                "loop_write_mode": True,
+                "loop_write_crossfade": False,
+                "param_sustain_loop_start_pct": "20",
+                "param_sustain_loop_end_pct": "80",
+                "param_sustain_loop_search_number": "10",
+                "param_sustain_loop_search_unit": "%",
+                "param_sustain_crossfade_policy": "Custom",
+                "param_sustain_crossfade_custom_number": "25",
+                "param_sustain_crossfade_custom_unit": "%",
+                "param_sustain_loop_mode": "back and forth",
+            },
+            audio_cache,
+        )
+
+        self.assertEqual(count, 1)
+        sustain = model.read_loop(model.get_zone(0), "SustainLoop")
+        self.assertEqual(sustain["start"], "0")
+        self.assertEqual(sustain["end"], "1")
+        self.assertEqual(sustain["mode"], MODULE.SUSTAIN_MODE_VALUES["back-and-forth"])
+        self.assertEqual(sustain["crossfade"], "0")
 
     def test_detect_release_loops_prefers_stable_tail_after_note_end(self):
         sr = 48000
@@ -1812,8 +1885,8 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         )
 
         zone = model.get_zone(0)
-        self.assertEqual(model.read_loop(zone, "SustainLoop")["mode"], MODULE.SUSTAIN_MODE_VALUES["on"])
-        self.assertEqual(model.read_loop(zone, "ReleaseLoop")["mode"], MODULE.RELEASE_MODE_VALUES["back and forth"])
+        self.assertEqual(model.read_loop(zone, "SustainLoop")["mode"], MODULE.SUSTAIN_MODE_VALUES["loop"])
+        self.assertEqual(model.read_loop(zone, "ReleaseLoop")["mode"], MODULE.RELEASE_MODE_VALUES["back-and-forth"])
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/AttackTime"), "12.5")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/DecayTime"), "345")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/SustainLevel"), "0.8")
@@ -2118,6 +2191,10 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.get_value_by_path(model.root, "AuxEnv/Slot/Value/SimplerAuxEnvelope/ModDst/ModConnections.0/Amount"), "33")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Pitch/Envelope/Slot/Value/SimplerPitchEnvelope/Amount"), "-7")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Player/SubOsc/Slot/Value/SimplerSubOsc/Type"), "5")
+
+        self.assertEqual(model.root.find("MultiSampler/AuxEnv/Slot/Value/SimplerAuxEnvelope").attrib.get("Id"), "0")
+        self.assertEqual(model.root.find("MultiSampler/Pitch/Envelope/Slot/Value/SimplerPitchEnvelope").attrib.get("Id"), "0")
+        self.assertEqual(model.root.find("MultiSampler/Player/SubOsc/Slot/Value/SimplerSubOsc").attrib.get("Id"), "0")
 
 
 if __name__ == "__main__":

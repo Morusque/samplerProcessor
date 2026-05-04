@@ -2,15 +2,9 @@
 done, to be tested :
 
 sorted mostly from probably quickest to more complex :
-- there used to be a "wavecycle" unit in loop start and end parameters (based on the root/detune detection) put it back, also in the "loop ponit search range" parameter
-- instead of having a "one waveform" option in the crossfade section, have "wavecycle" as a unit in the custom value line, similarly based on zone pitch and detune
-- looping points expressed in % should be based on the start-to-stop (potentially refined) section, it currently seems to be based to the whole space until the next note, at least visually, I should verify that
-- activating some sections of the parameters still creates corrupted files : Aux envelope parameters, Pitch envelope parameters, Sub oscillator parameters (similarly to what LFO used to do, possibly other parameters do that to)
-- default value for glide mode should be "Off" (0), default Glide time should be 10
-- have separate checkboxes for every parameter in the "loop" and "release loop" section so that the user can override certain but not other, and make the main checkbox feel more like a subpanel opener then
+- if "loop > start" is unchecked, the loop start should stay wherever the adv file (or default value if starting from an audio only) said it was, the value should have no impact, and same logic goes for every parameter with a checkbox on the left
 
 test or define first :
-- typical presets : also make a "refine points" one, a "refine detuning" one
 - maybe "start placement" should be in the "start/end refinement" panel
 - check what "sub osc on" is, the way it is placed in the ui and the name suggest something else than the osc section
 - make a special panel at the end and put in it everything legacy or unreachable from the usual Live UI, or unknown / unsure
@@ -19,3 +13,6 @@ test or define first :
 - more tests on approved files (including refined files) mainly for the tuning part
 - could the "global/processing settings" be a section on its own called "split" with the split button directly in it? and have other processing things handled differently (eg everything but split only saved with the file)
 - investigate threading (this should not be mixed with other tasks)
+- writing a value quickly on some ui elements trigger a recomputation at each digit, what solution is to be found, small hysteresis maybe?
+- sometimes exported adv files (when created from an audio file, doesn't seem to do it with existing adv) will appear nice but when playing a long note, small "gaps" can be hears in the sound, that are not present in the sample, find out why (maybe something mistagged somewhere)
+- create a "typical refinements from already sampled adv file" template
