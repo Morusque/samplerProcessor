@@ -2,7 +2,6 @@
 done, to be tested :
 
 sorted mostly from probably quickest to more complex :
-- sometimes exported adv files (when created from an audio file, doesn't seem to do it with existing adv) will appear nice but when playing a long note, small "gaps" can be hears in the sound, that are not present in the sample, find out why (maybe something mistagged somewhere)
 - why do "longest possible" crossfades don't seem 'as' long as possible?
 - write precise documentation
 

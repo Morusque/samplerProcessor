@@ -8015,10 +8015,11 @@ class SamplerAdvGui:
         audio_path = Path(audio_path).resolve()
         sample_count, sample_rate = read_audio_file_metadata(audio_path)
         zone_name = zone_name or audio_path.stem
+        sample_end = max(0, int(sample_count) - 1)
 
         set_value(zone, "Name", zone_name)
         set_value(zone, "SampleStart", 0)
-        set_value(zone, "SampleEnd", sample_count)
+        set_value(zone, "SampleEnd", sample_end)
         set_value(zone, "RootKey", 60)
         set_value(zone, "Detune", 0)
         set_value(zone, "TuneScale", 100)
@@ -8039,7 +8040,7 @@ class SamplerAdvGui:
             loop_node = child(zone, loop_tag)
             if loop_node is not None:
                 set_value_if_exists(loop_node, "Start", 0)
-                set_value_if_exists(loop_node, "End", sample_count)
+                set_value_if_exists(loop_node, "End", sample_end)
                 set_value_if_exists(loop_node, "Mode", 0)
                 set_value_if_exists(loop_node, "Crossfade", 0)
                 set_value_if_exists(loop_node, "Detune", 0)
