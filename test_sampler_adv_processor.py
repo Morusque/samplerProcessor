@@ -1318,6 +1318,43 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(len(plan["events"]), 1)
         self.assertEqual(plan["events"][0]["note"], 67)
 
+    def test_build_midi_test_plan_release_loop_extends_gap_not_note_length(self):
+        model = FakeMidiModel(
+            [
+                {
+                    "name": "release_loop_at_start",
+                    "zone_start": 0,
+                    "zone_end": 48000,
+                    "sample_rate": 48000,
+                    "release_loop": {"start": "0", "end": "12000", "mode": "1", "crossfade": "0", "detune": "0"},
+                }
+            ]
+        )
+
+        plan = MODULE.build_midi_test_plan(model, FakeMidiAudioCache(model), tempo_bpm=100.0, selector_cc=1)
+
+        self.assertEqual(len(plan["events"]), 1)
+        self.assertAlmostEqual(plan["events"][0]["hold_seconds"], 1.0, places=3)
+        self.assertAlmostEqual(plan["events"][0]["tail_seconds"], 0.35, places=3)
+
+    def test_build_midi_test_plan_sustain_loop_holds_one_loop_plus_margin(self):
+        model = FakeMidiModel(
+            [
+                {
+                    "name": "sustain_loop",
+                    "zone_start": 0,
+                    "zone_end": 48000,
+                    "sample_rate": 48000,
+                    "sustain_loop": {"start": "12000", "end": "24000", "mode": "1", "crossfade": "0", "detune": "0"},
+                }
+            ]
+        )
+
+        plan = MODULE.build_midi_test_plan(model, FakeMidiAudioCache(model), tempo_bpm=100.0, selector_cc=1)
+
+        self.assertEqual(len(plan["events"]), 1)
+        self.assertAlmostEqual(plan["events"][0]["hold_seconds"], 0.55, places=3)
+
     def test_write_midi_file_creates_valid_header(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             out_path = Path(tmpdir) / "midi_test.mid"
@@ -2097,13 +2134,11 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertNotEqual(model.read_loop(zone, "SustainLoop")["detune"], "0")
         self.assertNotEqual(model.read_loop(zone, "ReleaseLoop")["detune"], "0")
 
-    def test_apply_global_values_updates_loop_modes_and_envelope(self):
+    def test_apply_global_values_updates_envelope(self):
         model = self.load_model("test01.adv")
 
         model.apply_global_values(
             {
-                "param_default_loop_mode": "loop",
-                "param_default_release_loop_mode": "back and forth",
                 "param_env_attack_ms": "12.5",
                 "param_env_decay_ms": "345",
                 "param_env_sustain": "0.8",
@@ -2113,16 +2148,11 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "param_env_release_shape": "75",
             },
             {
-                "default_loop_mode": True,
-                "default_release_loop_mode": True,
                 "planned_envelope_time": True,
                 "planned_envelope_shape": True,
             },
         )
 
-        zone = model.get_zone(0)
-        self.assertEqual(model.read_loop(zone, "SustainLoop")["mode"], MODULE.SUSTAIN_MODE_VALUES["loop"])
-        self.assertEqual(model.read_loop(zone, "ReleaseLoop")["mode"], MODULE.RELEASE_MODE_VALUES["back-and-forth"])
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/AttackTime"), "12.5")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/DecayTime"), "345")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/SustainLevel"), "0.8")

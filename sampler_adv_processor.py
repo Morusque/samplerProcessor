@@ -47,6 +47,7 @@ except Exception:
 
 APP_TITLE = "Sampler ADV Processor V1.6.0"
 WAVEFORM_REFRESH_DEBOUNCE_MS = 300
+MIDI_TEST_LOOP_MARGIN_SECONDS = 0.05
 TEMPLATE_LIBRARY_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_ADV_SCAFFOLD_PATH = Path(__file__).resolve().parent / "test01.adv"
 DEFAULT_TOOL_TEMPLATE_PATH = TEMPLATE_LIBRARY_DIR / "default values 01.json"
@@ -1757,12 +1758,6 @@ class SamplerAdvModel:
         mmap = self.multisample_map
         envelope_path = "VolumeAndPan/Envelope"
 
-        sustain_modes = {self.read_loop(self.get_zone(i), "SustainLoop").get("mode", "") for i in range(self.zone_count())}
-        release_modes = {self.read_loop(self.get_zone(i), "ReleaseLoop").get("mode", "") for i in range(self.zone_count())}
-
-        sustain_mode = next(iter(sustain_modes)) if len(sustain_modes) == 1 else ""
-        release_mode = next(iter(release_modes)) if len(release_modes) == 1 else ""
-
         return {
             "voices": voices_node.attrib.get("Value", "") if voices_node is not None else "",
             "default_tune_scale": self.shared_zone_value("TuneScale"),
@@ -1770,8 +1765,6 @@ class SamplerAdvModel:
             "round_robin_mode": get_value(mmap, "RoundRobinMode", "") if mmap is not None else "",
             "round_robin_reset_period": get_value(mmap, "RoundRobinResetPeriod", "") if mmap is not None else "",
             "round_robin_random_seed": get_value(mmap, "RoundRobinRandomSeed", "") if mmap is not None else "",
-            "default_loop_mode": sustain_mode,
-            "default_release_loop_mode": release_mode,
             "env_attack_ms": get_manual_value_by_path(self.root, envelope_path + "/AttackTime", ""),
             "env_decay_ms": get_manual_value_by_path(self.root, envelope_path + "/DecayTime", ""),
             "env_sustain": get_manual_value_by_path(self.root, envelope_path + "/SustainLevel", ""),
@@ -1897,34 +1890,6 @@ class SamplerAdvModel:
                 int(val)
                 set_value_if_exists(self.multisample_map, "RoundRobinRandomSeed", val)
                 log("Updated RoundRobinRandomSeed: {}\n".format(val))
-
-        if global_update.get("default_loop_mode", False):
-            raw_mode = str(global_values.get("param_default_loop_mode", "loop")).strip()
-            val = loop_mode_value_from_label("sustain", raw_mode)
-            int(val)
-            updated = 0
-            for i in range(self.zone_count()):
-                zone = self.get_zone(i)
-                loop_vals = self.read_loop(zone, "SustainLoop")
-                if loop_vals.get("mode", "") != val:
-                    loop_vals["mode"] = val
-                    self.write_loop(zone, "SustainLoop", loop_vals)
-                    updated += 1
-            log("Updated SustainLoop mode on {} zone(s): {}\n".format(updated, val))
-
-        if global_update.get("default_release_loop_mode", False):
-            raw_mode = str(global_values.get("param_default_release_loop_mode", "loop")).strip()
-            val = loop_mode_value_from_label("release", raw_mode)
-            int(val)
-            updated = 0
-            for i in range(self.zone_count()):
-                zone = self.get_zone(i)
-                loop_vals = self.read_loop(zone, "ReleaseLoop")
-                if loop_vals.get("mode", "") != val:
-                    loop_vals["mode"] = val
-                    self.write_loop(zone, "ReleaseLoop", loop_vals)
-                    updated += 1
-            log("Updated ReleaseLoop mode on {} zone(s): {}\n".format(updated, val))
 
         envelope_updates = (
             ("param_env_attack_ms", "planned_envelope_time", "VolumeAndPan/Envelope/AttackTime", parse_number_from_text(global_values.get("param_env_attack_ms", "0.2"), 0.2)),
@@ -2247,24 +2212,24 @@ def zone_loop_runtime_seconds(model, zone, zone_audio):
     sustain_loop_length = max(1, sustain_end - sustain_start)
     sustain_hold = full_duration
     if sustain_mode in ("1", "2", "3"):
-        sustain_hold = max(0.05, ((sustain_start - zone_start) + sustain_loop_length) / float(sample_rate))
+        sustain_hold = max(
+            0.05,
+            ((sustain_start - zone_start) + sustain_loop_length) / float(sample_rate) + MIDI_TEST_LOOP_MARGIN_SECONDS,
+        )
 
     release = model.read_loop(zone, "ReleaseLoop")
     release_mode = str(release.get("mode", "")).strip()
     release_wait = 0.10
-    if release_mode != "0":
+    if release_mode not in ("", "0"):
         try:
             release_start = clamp_int(release.get("start", zone_start), zone_start, max(zone_start, zone_end - 1))
             release_end = clamp_int(release.get("end", zone_end), release_start + 1, zone_end)
         except Exception:
             release_start = zone_start
             release_end = zone_end
-        release_note_off = max(0.05, (release_start - zone_start) / float(sample_rate))
-        release_span = max(0.05, (zone_end - release_start) / float(sample_rate))
         release_loop_length = max(1, release_end - release_start)
-        if release_mode in ("2", "3"):
-            release_span = max(release_span, (release_end - release_start + release_loop_length) / float(sample_rate))
-        return min(sustain_hold, release_note_off), min(6.0, release_span)
+        release_span = max(0.05, release_loop_length / float(sample_rate))
+        return sustain_hold, min(6.0, release_wait + release_span)
 
     return sustain_hold, release_wait
 
@@ -7306,6 +7271,17 @@ class SamplerAdvGui:
 
         ttk.Label(per_zone_box, text="Pitch detection", font=("", 9, "bold")).grid(row=prow, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 3))
         prow += 1
+        self._param_row(
+            per_zone_box,
+            prow,
+            "Tune scale",
+            "param_default_tune_scale",
+            "100",
+            checkbox_store=self.global_update,
+            checkbox_key="default_tune_scale",
+            tooltip="Sampler pitch scale / TuneScale value applied to each zone.",
+        )
+        prow += 1
         self._checkbox_row(per_zone_box, prow, "Detect root note", "pitch_detection_root", tooltip="Estimate the zone pitch and write RootKey.", command=self._refresh_pitch_detection_visibility)
         prow += 1
         self._checkbox_row(per_zone_box, prow, "Detect detune", "pitch_detection_detune", tooltip="Estimate fine pitch and write zone detune in direct signed cents (-50 to +50). Positive values mean the sample is played sharper.", command=self._refresh_pitch_detection_visibility)
@@ -7461,24 +7437,13 @@ class SamplerAdvGui:
         preset_box.columnconfigure(2, weight=1)
         drow = 0
 
-        preset_basics_var = self._expander_row(preset_box, drow, "Preset basics", "preset_basics_panel", tooltip="Show tune scale, voice count, and round-robin settings.")
+        preset_basics_var = self._expander_row(preset_box, drow, "Preset basics", "preset_basics_panel", tooltip="Show voice count and round-robin settings.")
         drow += 1
         preset_basics_frame = ttk.Frame(preset_box)
         preset_basics_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         preset_basics_frame.columnconfigure(2, weight=1)
         self._register_visibility_rule(preset_basics_var, preset_basics_frame)
         brow = 0
-        self._param_row(
-            preset_basics_frame,
-            brow,
-            "Tune scale",
-            "param_default_tune_scale",
-            "100",
-            checkbox_store=self.global_update,
-            checkbox_key="default_tune_scale",
-            tooltip="Sampler pitch scale / TuneScale value applied to all zones.",
-        )
-        brow += 1
         self._choice_row(
             preset_basics_frame,
             brow,
@@ -10152,10 +10117,6 @@ class SamplerAdvGui:
         self.global_vars["rr_mode"].set(ROUND_ROBIN_MODE_VALUE_TO_LABEL.get(g["round_robin_mode"], g["round_robin_mode"]))
         self.global_vars["rr_reset"].set(ROUND_ROBIN_RESET_VALUE_TO_LABEL.get(g["round_robin_reset_period"], g["round_robin_reset_period"]))
         self.global_vars["rr_seed"].set(g["round_robin_random_seed"])
-        if "param_default_loop_mode" in self.global_vars and g.get("default_loop_mode", ""):
-            self.global_vars["param_default_loop_mode"].set(loop_mode_label_from_value("sustain", g["default_loop_mode"]))
-        if "param_default_release_loop_mode" in self.global_vars and g.get("default_release_loop_mode", ""):
-            self.global_vars["param_default_release_loop_mode"].set(loop_mode_label_from_value("release", g["default_release_loop_mode"]))
         for summary_key, global_key in (
             ("env_attack_ms", "param_env_attack_ms"),
             ("env_decay_ms", "param_env_decay_ms"),

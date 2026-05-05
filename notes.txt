@@ -4,7 +4,9 @@ done, to be tested :
 sorted mostly from probably quickest to more complex :
 
 test or define first :
+- maybe don't mix concept of root note spreading and key zones in the "spread notes" section
 - discuss file ops
 - could the "global/processing settings" be a section on its own called "split" with the split button directly in it? and have other processing things handled differently (eg everything but split only saved with the file)
 - more tests on approved files (including refined files) mainly for the tuning part
 - investigate threading (this should not be mixed with other tasks)
+- feature to batch-apply a template to many files
