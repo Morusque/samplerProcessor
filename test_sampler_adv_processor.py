@@ -1608,6 +1608,9 @@ class SamplerAdvProcessorTests(unittest.TestCase):
     def test_clamp_loop_crossfade_limits_to_available_pre_roll(self):
         self.assertEqual(MODULE.clamp_loop_crossfade(1000, 1100, 2100, 500), 100)
 
+    def test_clamp_loop_crossfade_allows_full_loop_length(self):
+        self.assertEqual(MODULE.clamp_loop_crossfade(0, 1000, 2000, 1500), 1000)
+
     def test_apply_zone_values_clamps_loop_detune_and_crossfade(self):
         model = self.load_model("test01.adv")
         summary = model.read_zone_summary(0)
@@ -1677,7 +1680,8 @@ class SamplerAdvProcessorTests(unittest.TestCase):
             200,
             delta=1,
         )
-        self.assertEqual(MODULE.AudioAnalysis.resolve_crossfade_samples(sr, loop_length, "Longest possible", "25", "%", pitch_hz=220.0), loop_length // 2)
+        self.assertEqual(MODULE.AudioAnalysis.resolve_crossfade_samples(sr, loop_length, "Longest possible", "25", "%", pitch_hz=220.0), loop_length)
+        self.assertEqual(MODULE.AudioAnalysis.resolve_crossfade_samples(sr, loop_length, "Custom", "100", "%", pitch_hz=220.0), loop_length)
 
     def test_normalize_zone_volumes_respects_amount_parameter(self):
         samples = MODULE.np.full(4096, 0.2, dtype=MODULE.np.float32)

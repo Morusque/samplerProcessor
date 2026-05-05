@@ -2,7 +2,6 @@
 done, to be tested :
 
 sorted mostly from probably quickest to more complex :
-- why do "longest possible" crossfades don't seem 'as' long as possible?
 - write precise documentation
 
 test or define first :

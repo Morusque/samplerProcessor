@@ -1138,7 +1138,7 @@ def clamp_loop_crossfade(sample_start, loop_start, loop_end, crossfade):
     crossfade = max(0, int(crossfade))
     loop_length = max(0, loop_end - loop_start)
     available_before_start = max(0, loop_start - sample_start)
-    return max(0, min(crossfade, loop_length // 2, available_before_start))
+    return max(0, min(crossfade, loop_length, available_before_start))
 
 
 def sanitize_filename_component(text, fallback="item"):
@@ -3177,13 +3177,13 @@ class AudioAnalysis:
         if loop_length <= 0 or policy == "No fade":
             return 0
         if policy == "Longest possible":
-            return max(0, loop_length // 2)
+            return max(0, loop_length)
         if policy == "One waveform":
             if pitch_hz and pitch_hz > 0:
                 period = int(round(sample_rate / float(pitch_hz)))
             else:
                 period = max(16, sample_rate // 220)
-            return max(0, min(loop_length // 2, int(period)))
+            return max(0, min(loop_length, int(period)))
 
         custom = AudioAnalysis.parse_number_unit_samples(
             custom_number,
@@ -3192,7 +3192,7 @@ class AudioAnalysis:
             loop_length,
             pitch_hz=pitch_hz,
         )
-        return max(0, min(loop_length // 2, int(custom)))
+        return max(0, min(loop_length, int(custom)))
 
     @staticmethod
     def nearest_zero_crossing(values, boundary_index, search_radius=12):
@@ -3384,7 +3384,7 @@ class AudioAnalysis:
         snapped_start, snapped_end = AudioAnalysis.snap_loop_boundaries_to_zero_crossings(values, best["start"], best["end"])
         best["start"] = int(snapped_start)
         best["end"] = int(snapped_end)
-        best["crossfade"] = int(min(max(0, best.get("crossfade", 0)), max(0, (best["end"] - best["start"]) // 2)))
+        best["crossfade"] = int(min(max(0, best.get("crossfade", 0)), max(0, best["end"] - best["start"])))
         return best
 
     @staticmethod
@@ -3530,7 +3530,7 @@ class AudioAnalysis:
         snapped_start, snapped_end = AudioAnalysis.snap_loop_boundaries_to_zero_crossings(values, best["start"], best["end"])
         best["start"] = int(snapped_start)
         best["end"] = int(snapped_end)
-        best["crossfade"] = int(min(max(0, best.get("crossfade", 0)), max(0, (best["end"] - best["start"]) // 2)))
+        best["crossfade"] = int(min(max(0, best.get("crossfade", 0)), max(0, best["end"] - best["start"])))
         return best
 
     @staticmethod
