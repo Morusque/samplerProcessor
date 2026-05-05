@@ -2,7 +2,6 @@
 done, to be tested :
 
 sorted mostly from probably quickest to more complex :
-- write precise documentation
 
 test or define first :
 - discuss file ops
