@@ -2150,7 +2150,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.get_value_by_path(model.root, "VelDst/ModConnections.0/Amount"), "77")
         self.assertEqual(MODULE.get_value_by_path(model.root, "MidiCtrl.0/Feedback"), "1")
 
-    def test_apply_global_values_skips_optional_missing_aux_lfo_and_routing_nodes(self):
+    def test_apply_global_values_creates_aux_lfo_but_skips_optional_missing_routing_nodes(self):
         model = self.load_model("test01.adv")
 
         model.apply_global_values(
@@ -2166,9 +2166,43 @@ class SamplerAdvProcessorTests(unittest.TestCase):
             },
         )
 
-        self.assertIsNone(MODULE.get_manual_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency"))
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/Frequency"), "6.25")
         self.assertIsNone(MODULE.get_value_by_path(model.root, "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst/ModConnections.0/Amount"))
         self.assertIsNone(MODULE.get_value_by_path(model.root, "MidiCtrl.7/Feedback"))
+
+    def test_apply_global_values_updates_generic_midi_routing_nodes(self):
+        model = self.load_model("test01.adv")
+
+        model.apply_global_values(
+            {
+                "param_midi_value::KeyDst/ModConnections.0/Connection": "Off",
+                "param_midi_value::VelDst/ModConnections.0/Connection": "Sample Selector (M)",
+                "param_midi_value::MidiCtrl.0/Feedback": "1",
+            },
+            {
+                "param_midi_value::KeyDst/ModConnections.0/Connection": True,
+                "param_midi_value::VelDst/ModConnections.0/Connection": True,
+                "param_midi_value::MidiCtrl.0/Feedback": True,
+            },
+        )
+
+        self.assertEqual(MODULE.get_value_by_path(model.root, "KeyDst/ModConnections.0/Connection"), "0")
+        self.assertEqual(MODULE.get_value_by_path(model.root, "VelDst/ModConnections.0/Connection"), "1")
+        self.assertEqual(MODULE.get_value_by_path(model.root, "MidiCtrl.0/Feedback"), "1")
+
+    def test_friendly_parameter_label_simplifies_internal_paths(self):
+        self.assertEqual(
+            MODULE.friendly_parameter_label("Filter/Slot/Value/SimplerFilter/Type", "Filter"),
+            "Filter type",
+        )
+        self.assertEqual(
+            MODULE.friendly_parameter_label("Filter/Slot/Value/SimplerFilter/Envelope/AttackTime", "Filter"),
+            "Envelope attack time",
+        )
+        self.assertEqual(
+            MODULE.friendly_parameter_label("KeyDst/ModConnections.0/Connection", "KeyDst"),
+            "Mod connection 0 connection",
+        )
 
     def test_apply_global_values_updates_generic_filter_manual_nodes(self):
         model = self.load_model("test01.adv")
@@ -2223,17 +2257,17 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "player_reverse": True,
                 "pitch_transpose_key": "12",
                 "pitch_transpose_fine": "-7",
+                "globals_pitch_bend_range": "3",
+                "globals_mpe_pitch_bend_range": "24",
                 "amp_panorama": "0.4",
                 "env_attack_level": "0.5",
                 "oneshot_sustain_mode": "1",
-                "aux_env_on": True,
                 "globals_portamento_time": "120",
                 "globals_env_include_attack": False,
                 "mmap_load_in_ram": True,
                 "mmap_layer_crossfade": "0.35",
                 "preset_user_name": "renamed preset",
                 "preset_creator": "Codex Test",
-                "player_sub_osc_on": True,
             },
             {
                 "player_loopmod_sample_start": True,
@@ -2241,17 +2275,17 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "player_reverse": True,
                 "pitch_transpose_key": True,
                 "pitch_transpose_fine": True,
+                "globals_pitch_bend_range": True,
+                "globals_mpe_pitch_bend_range": True,
                 "amp_panorama": True,
                 "env_attack_level": True,
                 "oneshot_sustain_mode": True,
-                "aux_env_on": True,
                 "globals_portamento_time": True,
                 "globals_env_include_attack": True,
                 "mmap_load_in_ram": True,
                 "mmap_layer_crossfade": True,
                 "preset_user_name": True,
                 "preset_creator": True,
-                "player_sub_osc_on": True,
             },
         )
 
@@ -2260,17 +2294,51 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Player/Reverse"), "true")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Pitch/TransposeKey"), "12")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Pitch/TransposeFine"), "-7")
+        self.assertEqual(MODULE.get_value_by_path(model.root, "Globals/PitchBendRange"), "3")
+        self.assertEqual(MODULE.get_value_by_path(model.root, "Globals/MpePitchBendRange"), "24")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Panorama"), "0.4")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/AttackLevel"), "0.5")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/OneShotEnvelope/SustainMode"), "1")
-        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "AuxEnv/IsOn"), "true")
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "AuxEnv/IsOn"), "false")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Globals/PortamentoTime"), "120")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Globals/EnvScale/EnvTimeIncludeAttack"), "false")
         self.assertEqual(MODULE.get_value_by_path(model.root, "MultiSampleMap/LoadInRam"), "true")
         self.assertEqual(MODULE.get_value_by_path(model.root, "MultiSampleMap/LayerCrossfade"), "0.35")
         self.assertEqual(MODULE.find_first_value_node_by_tag(model.root, "UserName").attrib.get("Value"), "renamed preset")
         self.assertEqual(model.creator(), "Codex Test")
-        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Player/SubOsc/IsOn"), "true")
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Player/SubOsc/IsOn"), "false")
+
+    def test_apply_global_values_updates_individual_envelope_parameters(self):
+        model = self.load_model("test01.adv")
+
+        model.apply_global_values(
+            {
+                "param_env_attack_ms": "3.5",
+                "param_env_decay_ms": "999",
+                "param_env_sustain": "0.25",
+                "param_env_release_ms": "44",
+                "param_env_attack_shape": "25",
+                "param_env_decay_shape": "-50",
+                "param_env_release_shape": "75",
+            },
+            {
+                "param_env_attack_ms": True,
+                "param_env_decay_ms": False,
+                "param_env_sustain": True,
+                "param_env_release_ms": False,
+                "param_env_attack_shape": True,
+                "param_env_decay_shape": False,
+                "param_env_release_shape": True,
+            },
+        )
+
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/AttackTime"), "3.5")
+        self.assertNotEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/DecayTime"), "999")
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/SustainLevel"), "0.25")
+        self.assertNotEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/ReleaseTime"), "44")
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/AttackSlope"), "0.25")
+        self.assertNotEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/DecaySlope"), "-0.5")
+        self.assertEqual(MODULE.get_manual_value_by_path(model.root, "VolumeAndPan/Envelope/ReleaseSlope"), "0.75")
 
     def test_rewrite_relative_sample_paths_recomputes_relative_path(self):
         model = self.load_model("test01.adv")

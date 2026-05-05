@@ -2,17 +2,13 @@
 done, to be tested :
 
 sorted mostly from probably quickest to more complex :
+- sometimes exported adv files (when created from an audio file, doesn't seem to do it with existing adv) will appear nice but when playing a long note, small "gaps" can be hears in the sound, that are not present in the sample, find out why (maybe something mistagged somewhere)
+- why do "longest possible" crossfades don't seem 'as' long as possible?
+- write precise documentation
 
 test or define first :
-- maybe "start placement" should be in the "start/end refinement" panel
-- check what "sub osc on" is, the way it is placed in the ui and the name suggest something else than the osc section
-- make a special panel at the end and put in it everything legacy or unreachable from the usual Live UI, or unknown / unsure
-- test and refine exactly what values in lfo and filter section mean
 - discuss file ops
-- more tests on approved files (including refined files) mainly for the tuning part
 - could the "global/processing settings" be a section on its own called "split" with the split button directly in it? and have other processing things handled differently (eg everything but split only saved with the file)
 - investigate threading (this should not be mixed with other tasks)
-- writing a value quickly on some ui elements trigger a recomputation at each digit, what solution is to be found, small hysteresis maybe?
-- sometimes exported adv files (when created from an audio file, doesn't seem to do it with existing adv) will appear nice but when playing a long note, small "gaps" can be hears in the sound, that are not present in the sample, find out why (maybe something mistagged somewhere)
 - create a "typical refinements from already sampled adv file" template
-- write precise documentation
+- more tests on approved files (including refined files) mainly for the tuning part

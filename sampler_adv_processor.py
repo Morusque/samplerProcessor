@@ -46,6 +46,7 @@ except Exception:
 # =============================================================================
 
 APP_TITLE = "Sampler ADV Processor V1.6.0"
+WAVEFORM_REFRESH_DEBOUNCE_MS = 300
 TEMPLATE_LIBRARY_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_ADV_SCAFFOLD_PATH = Path(__file__).resolve().parent / "test01.adv"
 DEFAULT_TOOL_TEMPLATE_PATH = TEMPLATE_LIBRARY_DIR / "default values 01.json"
@@ -194,6 +195,7 @@ ENUM_MAPS = {
     "filter_type": build_enum_maps(["lowpass", "highpass", "bandpass", "notch", "morph"]),
     "filter_slope": build_enum_maps(["12", "24"], ["false", "true"]),
     "filter_circuit": build_enum_maps(["Clean", "OSR", "MS2", "SMP", "PRD"]),
+    "filter_circuit_bp_no_mo": build_enum_maps(["Clean", "OSR"]),
     "shaper_type": build_enum_maps(["soft", "hard", "sine", "4bit"]),
     "sub_osc_mode": build_enum_maps(["FM", "AM"]),
     "sub_osc_type": build_enum_maps([
@@ -218,6 +220,7 @@ ENUM_MAPS = {
         "Noise",
     ]),
     "routing_connection": build_enum_maps([
+        "Off",
         "Sample Selector (M)",
         "Sample Offset (M)",
         "Loop Start (M)",
@@ -507,10 +510,7 @@ VALUE_TEMPLATE_SPECS = {
     ],
 }
 
-OPTIONAL_GENERIC_MANUAL_BASES = {
-    "AuxLfos.0/Slot/Value/SimplerAuxLfo",
-    "AuxLfos.1/Slot/Value/SimplerAuxLfo",
-}
+OPTIONAL_GENERIC_MANUAL_BASES = set()
 
 OPTIONAL_GENERIC_VALUE_BASES = {
     "MidiCtrl.6",
@@ -539,6 +539,7 @@ def apply_template_defaults_to_synthesized_specs():
     }
     value_prefixes = {
         "param_lfo_value::": VALUE_TEMPLATE_SPECS,
+        "param_midi_value::": VALUE_TEMPLATE_SPECS,
         "param_aux_env_value::": VALUE_TEMPLATE_SPECS,
         "param_filter_value::": VALUE_TEMPLATE_SPECS,
     }
@@ -591,16 +592,7 @@ DEFAULT_PRESET_SIMPLE_SECTIONS = [
     {
         "title": "Player / Playback",
         "fields": [
-            {"kind": "entry", "label": "Loop mod sample start", "key": "player_loopmod_sample_start", "update": "player_loopmod_sample_start", "storage": "manual", "path": "Player/LoopModulators/SampleStart", "default": "0"},
-            {"kind": "entry", "label": "Loop mod sample length", "key": "player_loopmod_sample_length", "update": "player_loopmod_sample_length", "storage": "manual", "path": "Player/LoopModulators/SampleLength", "default": "1"},
-            {"kind": "bool", "label": "Loop mod loop on", "key": "player_loopmod_loop_on", "update": "player_loopmod_loop_on", "storage": "manual", "path": "Player/LoopModulators/LoopOn", "default": False},
-            {"kind": "entry", "label": "Loop mod loop length", "key": "player_loopmod_loop_length", "update": "player_loopmod_loop_length", "storage": "manual", "path": "Player/LoopModulators/LoopLength", "default": "1"},
-            {"kind": "entry", "label": "Loop mod loop fade", "key": "player_loopmod_loop_fade", "update": "player_loopmod_loop_fade", "storage": "manual", "path": "Player/LoopModulators/LoopFade", "default": "0"},
-            {"kind": "bool", "label": "Reverse", "key": "player_reverse", "update": "player_reverse", "storage": "manual", "path": "Player/Reverse", "default": False},
-            {"kind": "bool", "label": "Snap", "key": "player_snap", "update": "player_snap", "storage": "manual", "path": "Player/Snap", "default": False},
             {"kind": "entry", "label": "Sample selector", "key": "player_sample_selector", "update": "player_sample_selector", "storage": "manual", "path": "Player/SampleSelector", "default": "0"},
-            {"kind": "choice", "label": "Interpolation mode", "key": "player_interpolation_mode", "update": "player_interpolation_mode", "storage": "value", "path": "Player/InterpolationMode", "default": "normal", "enum_id": "interpolation_mode"},
-            {"kind": "bool", "label": "Sub osc on", "key": "player_sub_osc_on", "update": "player_sub_osc_on", "storage": "manual", "path": "Player/SubOsc/IsOn", "default": False},
         ],
     },
     {
@@ -610,8 +602,6 @@ DEFAULT_PRESET_SIMPLE_SECTIONS = [
             {"kind": "entry", "label": "Transpose fine", "key": "pitch_transpose_fine", "update": "pitch_transpose_fine", "storage": "manual", "path": "Pitch/TransposeFine", "default": "0"},
             {"kind": "entry", "label": "Pitch LFO amount", "key": "pitch_lfo_amount", "update": "pitch_lfo_amount", "storage": "manual", "path": "Pitch/PitchLfoAmount", "default": "0"},
             {"kind": "entry", "label": "Key zone shift", "key": "globals_key_zone_shift", "update": "globals_key_zone_shift", "storage": "manual", "path": "Globals/KeyZoneShift", "default": "0"},
-            {"kind": "entry", "label": "Pitch bend range", "key": "globals_pitch_bend_range", "update": "globals_pitch_bend_range", "storage": "value", "path": "Globals/PitchBendRange", "default": "12"},
-            {"kind": "entry", "label": "MPE pitch bend range", "key": "globals_mpe_pitch_bend_range", "update": "globals_mpe_pitch_bend_range", "storage": "value", "path": "Globals/MpePitchBendRange", "default": "48"},
         ],
     },
     {
@@ -620,11 +610,9 @@ DEFAULT_PRESET_SIMPLE_SECTIONS = [
             {"kind": "entry", "label": "Volume", "key": "amp_volume", "update": "amp_volume", "storage": "manual", "path": "VolumeAndPan/Volume", "default": "-12"},
             {"kind": "entry", "label": "Volume vel scale", "key": "amp_volume_vel_scale", "update": "amp_volume_vel_scale", "storage": "manual", "path": "VolumeAndPan/VolumeVelScale", "default": "0.7"},
             {"kind": "entry", "label": "Volume key scale", "key": "amp_volume_key_scale", "update": "amp_volume_key_scale", "storage": "manual", "path": "VolumeAndPan/VolumeKeyScale", "default": "0"},
-            {"kind": "entry", "label": "Volume LFO amount", "key": "amp_volume_lfo_amount", "update": "amp_volume_lfo_amount", "storage": "manual", "path": "VolumeAndPan/VolumeLfoAmount", "default": "0"},
             {"kind": "entry", "label": "Panorama", "key": "amp_panorama", "update": "amp_panorama", "storage": "manual", "path": "VolumeAndPan/Panorama", "default": "0"},
             {"kind": "entry", "label": "Panorama key scale", "key": "amp_panorama_key_scale", "update": "amp_panorama_key_scale", "storage": "manual", "path": "VolumeAndPan/PanoramaKeyScale", "default": "0"},
             {"kind": "entry", "label": "Panorama rnd", "key": "amp_panorama_rnd", "update": "amp_panorama_rnd", "storage": "manual", "path": "VolumeAndPan/PanoramaRnd", "default": "0"},
-            {"kind": "entry", "label": "Panorama LFO amount", "key": "amp_panorama_lfo_amount", "update": "amp_panorama_lfo_amount", "storage": "manual", "path": "VolumeAndPan/PanoramaLfoAmount", "default": "0"},
         ],
     },
     {
@@ -640,42 +628,57 @@ DEFAULT_PRESET_SIMPLE_SECTIONS = [
         ],
     },
     {
-        "title": "One-shot Envelope",
-        "fields": [
-            {"kind": "entry", "label": "Fade in time", "key": "oneshot_fade_in_time", "update": "oneshot_fade_in_time", "storage": "manual", "path": "VolumeAndPan/OneShotEnvelope/FadeInTime", "default": "0"},
-            {"kind": "entry", "label": "Sustain mode", "key": "oneshot_sustain_mode", "update": "oneshot_sustain_mode", "storage": "manual", "path": "VolumeAndPan/OneShotEnvelope/SustainMode", "default": "0"},
-            {"kind": "entry", "label": "Fade out time", "key": "oneshot_fade_out_time", "update": "oneshot_fade_out_time", "storage": "manual", "path": "VolumeAndPan/OneShotEnvelope/FadeOutTime", "default": "5"},
-        ],
-    },
-    {
         "title": "Aux Envelope / Global Behavior",
         "fields": [
-            {"kind": "bool", "label": "Aux env on", "key": "aux_env_on", "update": "aux_env_on", "storage": "manual", "path": "AuxEnv/IsOn", "default": False},
             {"kind": "entry", "label": "Spread amount", "key": "globals_spread_amount", "update": "globals_spread_amount", "storage": "manual", "path": "Globals/SpreadAmount", "default": "0"},
             {"kind": "choice", "label": "Portamento mode", "key": "globals_portamento_mode", "update": "globals_portamento_mode", "storage": "manual", "path": "Globals/PortamentoMode", "default": "off", "enum_id": "portamento_mode"},
             {"kind": "entry", "label": "Portamento time", "key": "globals_portamento_time", "update": "globals_portamento_time", "storage": "manual", "path": "Globals/PortamentoTime", "default": "10"},
             {"kind": "entry", "label": "Env scale time", "key": "globals_env_scale_time", "update": "globals_env_scale_time", "storage": "manual", "path": "Globals/EnvScale/EnvTime", "default": "0"},
-            {"kind": "entry", "label": "Env time key scale", "key": "globals_env_time_key_scale", "update": "globals_env_time_key_scale", "storage": "manual", "path": "Globals/EnvScale/EnvTimeKeyScale", "default": "0"},
-            {"kind": "bool", "label": "Env include attack", "key": "globals_env_include_attack", "update": "globals_env_include_attack", "storage": "manual", "path": "Globals/EnvScale/EnvTimeIncludeAttack", "default": True},
+            {"kind": "entry", "label": "Time<Key", "key": "globals_env_time_key_scale", "update": "globals_env_time_key_scale", "storage": "manual", "path": "Globals/EnvScale/EnvTimeKeyScale", "default": "0"},
         ],
     },
     {
         "title": "Multisample Map / Identity",
         "fields": [
             {"kind": "bool", "label": "Load in RAM", "key": "mmap_load_in_ram", "update": "mmap_load_in_ram", "storage": "value", "path": "MultiSampleMap/LoadInRam", "default": False},
-            {"kind": "entry", "label": "Layer crossfade", "key": "mmap_layer_crossfade", "update": "mmap_layer_crossfade", "storage": "value", "path": "MultiSampleMap/LayerCrossfade", "default": "0"},
             {"kind": "entry", "label": "Preset name", "key": "preset_user_name", "update": "preset_user_name", "storage": "tag", "path": "UserName", "default": ""},
             {"kind": "entry", "label": "Creator", "key": "preset_creator", "update": "preset_creator", "storage": "root_attr", "path": "Creator", "default": ""},
         ],
     },
+    {
+        "title": "Bonus",
+        "fields": [
+            {"kind": "entry", "label": "Loop mod sample start", "key": "player_loopmod_sample_start", "update": "player_loopmod_sample_start", "storage": "manual", "path": "Player/LoopModulators/SampleStart", "default": "0"},
+            {"kind": "entry", "label": "Loop mod sample length", "key": "player_loopmod_sample_length", "update": "player_loopmod_sample_length", "storage": "manual", "path": "Player/LoopModulators/SampleLength", "default": "1"},
+            {"kind": "bool", "label": "Loop mod loop on", "key": "player_loopmod_loop_on", "update": "player_loopmod_loop_on", "storage": "manual", "path": "Player/LoopModulators/LoopOn", "default": False},
+            {"kind": "entry", "label": "Loop mod loop length", "key": "player_loopmod_loop_length", "update": "player_loopmod_loop_length", "storage": "manual", "path": "Player/LoopModulators/LoopLength", "default": "1"},
+            {"kind": "entry", "label": "Loop mod loop fade", "key": "player_loopmod_loop_fade", "update": "player_loopmod_loop_fade", "storage": "manual", "path": "Player/LoopModulators/LoopFade", "default": "0"},
+            {"kind": "bool", "label": "Reverse", "key": "player_reverse", "update": "player_reverse", "storage": "manual", "path": "Player/Reverse", "default": False},
+            {"kind": "bool", "label": "Snap", "key": "player_snap", "update": "player_snap", "storage": "manual", "path": "Player/Snap", "default": False},
+            {"kind": "choice", "label": "Interpolation mode", "key": "player_interpolation_mode", "update": "player_interpolation_mode", "storage": "value", "path": "Player/InterpolationMode", "default": "normal", "enum_id": "interpolation_mode"},
+            {"kind": "entry", "label": "Volume LFO amount", "key": "amp_volume_lfo_amount", "update": "amp_volume_lfo_amount", "storage": "manual", "path": "VolumeAndPan/VolumeLfoAmount", "default": "0"},
+            {"kind": "entry", "label": "Panorama LFO amount", "key": "amp_panorama_lfo_amount", "update": "amp_panorama_lfo_amount", "storage": "manual", "path": "VolumeAndPan/PanoramaLfoAmount", "default": "0"},
+            {"kind": "entry", "label": "One-shot fade in time", "key": "oneshot_fade_in_time", "update": "oneshot_fade_in_time", "storage": "manual", "path": "VolumeAndPan/OneShotEnvelope/FadeInTime", "default": "0"},
+            {"kind": "entry", "label": "One-shot sustain mode", "key": "oneshot_sustain_mode", "update": "oneshot_sustain_mode", "storage": "manual", "path": "VolumeAndPan/OneShotEnvelope/SustainMode", "default": "0"},
+            {"kind": "entry", "label": "One-shot fade out time", "key": "oneshot_fade_out_time", "update": "oneshot_fade_out_time", "storage": "manual", "path": "VolumeAndPan/OneShotEnvelope/FadeOutTime", "default": "5"},
+            {"kind": "bool", "label": "Env include attack", "key": "globals_env_include_attack", "update": "globals_env_include_attack", "storage": "manual", "path": "Globals/EnvScale/EnvTimeIncludeAttack", "default": True},
+            {"kind": "entry", "label": "Layer crossfade", "key": "mmap_layer_crossfade", "update": "mmap_layer_crossfade", "storage": "value", "path": "MultiSampleMap/LayerCrossfade", "default": "0"},
+            {"kind": "entry", "label": "Round robin seed", "key": "rr_seed", "update": "rr_seed", "storage": "value", "path": "MultiSampleMap/RoundRobinRandomSeed", "default": "-1501161561"},
+        ],
+    },
+]
+
+MIDI_PARAMETER_FIELD_SPECS = [
+    {"kind": "entry", "label": "Pitch bend range", "key": "globals_pitch_bend_range", "update": "globals_pitch_bend_range", "storage": "value", "path": "Globals/PitchBendRange", "default": "12"},
+    {"kind": "entry", "label": "MPE pitch bend range", "key": "globals_mpe_pitch_bend_range", "update": "globals_mpe_pitch_bend_range", "storage": "value", "path": "Globals/MpePitchBendRange", "default": "48"},
 ]
 
 
 def apply_template_defaults_to_default_preset_simple_sections():
     if not DEFAULT_TOOL_TEMPLATE_GLOBAL_VALUES:
         return
-    for section in DEFAULT_PRESET_SIMPLE_SECTIONS:
-        for field in section.get("fields", []):
+    for fields in ([section.get("fields", []) for section in DEFAULT_PRESET_SIMPLE_SECTIONS] + [MIDI_PARAMETER_FIELD_SPECS]):
+        for field in fields:
             key = field.get("key")
             if key in DEFAULT_TOOL_TEMPLATE_GLOBAL_VALUES:
                 field["default"] = DEFAULT_TOOL_TEMPLATE_GLOBAL_VALUES[key]
@@ -1051,7 +1054,8 @@ def migrate_loop_write_flags(data, processing_update):
 def migrate_generic_panel_write_flags(data, global_update):
     source = data.get("global_update", {}) if isinstance(data, dict) else {}
     legacy_panel_prefixes = (
-        ("generic_lfo", ("param_lfo_manual::", "param_lfo_value::")),
+        ("generic_lfo", ("param_lfo_manual::", "param_lfo_value::", "param_midi_value::")),
+        ("generic_midi", ("param_midi_value::",)),
         ("generic_filter", ("param_filter_manual::", "param_filter_value::")),
         ("generic_aux_env", ("param_aux_env_manual::", "param_aux_env_value::")),
         ("generic_pitch_env", ("param_pitch_env_manual::",)),
@@ -1065,6 +1069,22 @@ def migrate_generic_panel_write_flags(data, global_update):
         for key, var in global_update.items():
             if any(str(key).startswith(prefix) for prefix in prefixes):
                 var.set(True)
+
+
+def migrate_envelope_write_flags(data, global_update):
+    source = data.get("global_update", {}) if isinstance(data, dict) else {}
+    groups = (
+        ("planned_envelope_time", ("param_env_attack_ms", "param_env_decay_ms", "param_env_sustain", "param_env_release_ms")),
+        ("planned_envelope_shape", ("param_env_attack_shape", "param_env_decay_shape", "param_env_release_shape")),
+    )
+    for legacy_key, keys in groups:
+        if not source.get(legacy_key, False):
+            continue
+        if any(key in source for key in keys):
+            continue
+        for key in keys:
+            if key in global_update:
+                global_update[key].set(True)
 
 
 def list_value_parameter_paths(root, base_path):
@@ -1086,6 +1106,8 @@ def list_value_parameter_paths(root, base_path):
 
 
 def iter_default_preset_field_specs():
+    for spec in MIDI_PARAMETER_FIELD_SPECS:
+        yield spec
     for section in DEFAULT_PRESET_SIMPLE_SECTIONS:
         for spec in section["fields"]:
             yield spec
@@ -1175,6 +1197,54 @@ def enum_value_from_label(enum_id, label):
     return info["label_to_value"].get(str(label), str(label))
 
 
+def split_camel_label(text):
+    raw = str(text or "").strip().replace("_", " ")
+    raw = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+    raw = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
+def friendly_parameter_label(path, group_title=""):
+    path = str(path or "")
+    group_title = str(group_title or "")
+    parts = [part for part in path.split("/") if part and part not in ("Slot", "Value")]
+    parts = [part for part in parts if not part.startswith("Simpler")]
+    parts = [part.replace("ModConnections.", "Mod connection ") for part in parts]
+    parts = [split_camel_label(part) for part in parts]
+
+    if not parts:
+        return path
+
+    if len(parts) >= 2 and (parts[-2].lower() in ("envelope", "mod dst") or parts[-2].lower().startswith("mod connection")):
+        label_parts = parts[-2:]
+    else:
+        label_parts = parts[-1:]
+    label = " ".join(label_parts)
+
+    group_base = re.sub(r"\s+bonus$", "", group_title, flags=re.IGNORECASE).strip()
+    if group_base and label.lower() in ("type", "mode", "amount", "is on"):
+        label = "{} {}".format(group_base, label)
+    label = label.lower()
+
+    replacements = {
+        "Is On": "On",
+        "Bp No Mo": "BP/NoMo",
+        "Lp Hp": "LP/HP",
+        "Mod Dst": "Mod destination",
+        "Key Dst": "Key destination",
+        "Vel Dst": "Velocity destination",
+        "Rel Vel Dst": "Release velocity destination",
+        "Midi Ctrl": "MIDI controller",
+        "Lfo": "LFO",
+        "Mpe": "MPE",
+        "Q": "Q",
+    }
+    for src, dst in replacements.items():
+        label = re.sub(r"\b{}\b".format(re.escape(src)), dst, label, flags=re.IGNORECASE)
+    return label[:1].upper() + label[1:]
+
+
 def enum_id_for_path(path):
     path = str(path)
     if path == "Player/InterpolationMode":
@@ -1186,6 +1256,7 @@ def enum_id_for_path(path):
         "AuxEnv/Slot/Value/SimplerAuxEnvelope/LoopMode",
         "Pitch/Envelope/Slot/Value/SimplerPitchEnvelope/LoopMode",
         "Player/SubOsc/Slot/Value/SimplerSubOsc/Envelope/LoopMode",
+        "Filter/Slot/Value/SimplerFilter/Envelope/LoopMode",
     ):
         return "envelope_loop_mode"
     if path in ("Lfo/Slot/Value/SimplerLfo/Type", "AuxLfos.0/Slot/Value/SimplerAuxLfo/Type", "AuxLfos.1/Slot/Value/SimplerAuxLfo/Type"):
@@ -1200,8 +1271,10 @@ def enum_id_for_path(path):
         return "filter_type"
     if path == "Filter/Slot/Value/SimplerFilter/Slope":
         return "filter_slope"
-    if path in ("Filter/Slot/Value/SimplerFilter/CircuitLpHp", "Filter/Slot/Value/SimplerFilter/CircuitBpNoMo"):
+    if path == "Filter/Slot/Value/SimplerFilter/CircuitLpHp":
         return "filter_circuit"
+    if path == "Filter/Slot/Value/SimplerFilter/CircuitBpNoMo":
+        return "filter_circuit_bp_no_mo"
     if path == "Shaper/Slot/Value/SimplerShaper/Type":
         return "shaper_type"
     if path == "Player/SubOsc/Slot/Value/SimplerSubOsc/Mode":
@@ -1853,26 +1926,23 @@ class SamplerAdvModel:
                     updated += 1
             log("Updated ReleaseLoop mode on {} zone(s): {}\n".format(updated, val))
 
-        if global_update.get("planned_envelope_time", False):
-            envelope_updates = {
-                "VolumeAndPan/Envelope/AttackTime": parse_number_from_text(global_values.get("param_env_attack_ms", "0.2"), 0.2),
-                "VolumeAndPan/Envelope/DecayTime": parse_number_from_text(global_values.get("param_env_decay_ms", "1000"), 1000.0),
-                "VolumeAndPan/Envelope/SustainLevel": parse_number_from_text(global_values.get("param_env_sustain", "1"), 1.0),
-                "VolumeAndPan/Envelope/ReleaseTime": parse_number_from_text(global_values.get("param_env_release_ms", "20"), 20.0),
-            }
-            for path, value in envelope_updates.items():
-                set_manual_value_by_path(self.root, path, float_to_text(value))
-            log("Updated amplitude envelope times/level.\n")
-
-        if global_update.get("planned_envelope_shape", False):
-            slope_updates = {
-                "VolumeAndPan/Envelope/AttackSlope": max(-1.0, min(1.0, parse_number_from_text(global_values.get("param_env_attack_shape", "0"), 0.0) / 100.0)),
-                "VolumeAndPan/Envelope/DecaySlope": max(-1.0, min(1.0, parse_number_from_text(global_values.get("param_env_decay_shape", "0"), 0.0) / 100.0)),
-                "VolumeAndPan/Envelope/ReleaseSlope": max(-1.0, min(1.0, parse_number_from_text(global_values.get("param_env_release_shape", "0"), 0.0) / 100.0)),
-            }
-            for path, value in slope_updates.items():
-                set_manual_value_by_path(self.root, path, float_to_text(value))
-            log("Updated amplitude envelope slopes.\n")
+        envelope_updates = (
+            ("param_env_attack_ms", "planned_envelope_time", "VolumeAndPan/Envelope/AttackTime", parse_number_from_text(global_values.get("param_env_attack_ms", "0.2"), 0.2)),
+            ("param_env_decay_ms", "planned_envelope_time", "VolumeAndPan/Envelope/DecayTime", parse_number_from_text(global_values.get("param_env_decay_ms", "1000"), 1000.0)),
+            ("param_env_sustain", "planned_envelope_time", "VolumeAndPan/Envelope/SustainLevel", parse_number_from_text(global_values.get("param_env_sustain", "1"), 1.0)),
+            ("param_env_release_ms", "planned_envelope_time", "VolumeAndPan/Envelope/ReleaseTime", parse_number_from_text(global_values.get("param_env_release_ms", "20"), 20.0)),
+            ("param_env_attack_shape", "planned_envelope_shape", "VolumeAndPan/Envelope/AttackSlope", max(-1.0, min(1.0, parse_number_from_text(global_values.get("param_env_attack_shape", "0"), 0.0) / 100.0))),
+            ("param_env_decay_shape", "planned_envelope_shape", "VolumeAndPan/Envelope/DecaySlope", max(-1.0, min(1.0, parse_number_from_text(global_values.get("param_env_decay_shape", "0"), 0.0) / 100.0))),
+            ("param_env_release_shape", "planned_envelope_shape", "VolumeAndPan/Envelope/ReleaseSlope", max(-1.0, min(1.0, parse_number_from_text(global_values.get("param_env_release_shape", "0"), 0.0) / 100.0))),
+        )
+        envelope_updated = 0
+        for update_key, legacy_group_key, path, value in envelope_updates:
+            if not (global_update.get(update_key, False) or global_update.get(legacy_group_key, False)):
+                continue
+            set_manual_value_by_path(self.root, path, float_to_text(value))
+            envelope_updated += 1
+        if envelope_updated:
+            log("Updated {} amplitude envelope parameter(s).\n".format(envelope_updated))
 
         if any(global_update.get(key, False) for key in global_values if str(key).startswith(("param_lfo_manual::", "param_lfo_value::"))):
             updated = 0
@@ -1910,6 +1980,27 @@ class SamplerAdvModel:
                 set_manual_value_by_path(self.root, path, value)
                 updated += 1
             log("Updated {} generic modulation parameter(s).\n".format(updated))
+
+        if any(global_update.get(key, False) for key in global_values if str(key).startswith("param_midi_value::")):
+            updated = 0
+            for key, value in global_values.items():
+                if not str(key).startswith("param_midi_value::"):
+                    continue
+                if not global_update.get(key, False):
+                    continue
+                path = str(key).split("::", 1)[1]
+                base_path = matching_template_base(path, VALUE_TEMPLATE_SPECS)
+                if base_path in OPTIONAL_GENERIC_VALUE_BASES and not generic_value_group_has_existing_content(self.root, base_path):
+                    continue
+                enum_id = enum_id_for_path(path)
+                if enum_id and enum_id != "__hidden__":
+                    value = enum_value_from_label(enum_id, value)
+                elif isinstance(value, bool):
+                    value = "true" if value else "false"
+                ensure_direct_value_path(self.root, path)
+                set_value_by_path(self.root, path, value)
+                updated += 1
+            log("Updated {} generic MIDI routing parameter(s).\n".format(updated))
 
         if any(global_update.get(key, False) for key in global_values if str(key).startswith(("param_filter_manual::", "param_filter_value::"))):
             updated = 0
@@ -5985,6 +6076,7 @@ class SamplerAdvGui:
         self.waveform_refresh_after_id = None
         self.waveform_view_state = None
         self.dynamic_lfo_keys = []
+        self.dynamic_midi_keys = []
         self.dynamic_filter_keys = []
         self.dynamic_aux_env_keys = []
         self.dynamic_pitch_env_keys = []
@@ -6194,14 +6286,19 @@ class SamplerAdvGui:
             cb_key = checkbox_key or key
             var_cb = tk.BooleanVar(value=False)
             checkbox_store[cb_key] = var_cb
-            ttk.Checkbutton(parent, variable=var_cb).grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
+            cb = ttk.Checkbutton(parent, variable=var_cb)
+            cb.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
             label_col = 1
             entry_col = 2
         else:
+            var_cb = None
             label_col = 0
             entry_col = 1
 
-        ttk.Label(parent, text=label).grid(row=row, column=label_col, sticky="w", padx=4, pady=3)
+        lab = ttk.Label(parent, text=label)
+        lab.grid(row=row, column=label_col, sticky="w", padx=4, pady=3)
+        if var_cb is not None:
+            lab.bind("<Button-1>", lambda _event, var=var_cb: var.set(not bool(var.get())))
         var = tk.StringVar()
         store[key] = var
         ent = ttk.Entry(parent, textvariable=var)
@@ -6219,12 +6316,15 @@ class SamplerAdvGui:
             label_col = 1
             entry_col = 2
         else:
+            var_cb = None
             label_col = 0
             entry_col = 1
 
         lab = ttk.Label(parent, text=label)
         lab.grid(row=row, column=label_col, sticky="w", padx=4, pady=3)
         add_tooltip(lab, tooltip)
+        if var_cb is not None:
+            lab.bind("<Button-1>", lambda _event, var=var_cb: var.set(not bool(var.get())))
 
         var = tk.StringVar(value=default)
         self.global_vars[key] = var
@@ -6335,12 +6435,15 @@ class SamplerAdvGui:
             label_col = 1
             entry_col = 2
         else:
+            var_cb = None
             label_col = 0
             entry_col = 1
 
         lab = ttk.Label(parent, text=label)
         lab.grid(row=row, column=label_col, sticky="w", padx=4, pady=3)
         add_tooltip(lab, tooltip)
+        if var_cb is not None:
+            lab.bind("<Button-1>", lambda _event, var=var_cb: var.set(not bool(var.get())))
 
         var = tk.StringVar(value=default)
         store[key] = var
@@ -6409,46 +6512,56 @@ class SamplerAdvGui:
     def _build_default_preset_simple_sections(self, parent, start_row):
         row = start_row
         for section in DEFAULT_PRESET_SIMPLE_SECTIONS:
-            self._section_label(parent, row, section["title"])
+            section_key = "default_section_" + re.sub(r"[^a-z0-9]+", "_", section["title"].lower()).strip("_")
+            section_var = self._expander_row(parent, row, section["title"], section_key)
             row += 1
+            section_frame = ttk.Frame(parent)
+            section_frame.grid(row=row, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+            section_frame.columnconfigure(2, weight=1)
+            self._register_visibility_rule(section_var, section_frame)
+            inner_row = 0
             for spec in section["fields"]:
-                tooltip = spec.get("tooltip", "")
-                if spec["kind"] == "bool":
-                    self._bool_value_row(
-                        parent,
-                        row,
-                        spec["label"],
-                        spec["key"],
-                        spec.get("default", False),
-                        self.global_update,
-                        spec["update"],
-                        tooltip=tooltip,
-                    )
-                elif spec["kind"] == "choice":
-                    self._choice_row(
-                        parent,
-                        row,
-                        spec["label"],
-                        spec["key"],
-                        enum_choices(spec.get("enum_id")) or spec.get("choices", []),
-                        spec.get("default", ""),
-                        self.global_update,
-                        spec["update"],
-                        tooltip=tooltip,
-                    )
-                else:
-                    self._param_row(
-                        parent,
-                        row,
-                        spec["label"],
-                        spec["key"],
-                        spec.get("default", ""),
-                        checkbox_store=self.global_update,
-                        checkbox_key=spec["update"],
-                        tooltip=tooltip,
-                    )
-                row += 1
+                self._build_default_preset_field_row(section_frame, inner_row, spec)
+                inner_row += 1
+            row += 1
         return row
+
+    def _build_default_preset_field_row(self, parent, row, spec):
+        tooltip = spec.get("tooltip", "")
+        if spec["kind"] == "bool":
+            self._bool_value_row(
+                parent,
+                row,
+                spec["label"],
+                spec["key"],
+                spec.get("default", False),
+                self.global_update,
+                spec["update"],
+                tooltip=tooltip,
+            )
+        elif spec["kind"] == "choice":
+            self._choice_row(
+                parent,
+                row,
+                spec["label"],
+                spec["key"],
+                enum_choices(spec.get("enum_id")) or spec.get("choices", []),
+                spec.get("default", ""),
+                self.global_update,
+                spec["update"],
+                tooltip=tooltip,
+            )
+        else:
+            self._param_row(
+                parent,
+                row,
+                spec["label"],
+                spec["key"],
+                spec.get("default", ""),
+                checkbox_store=self.global_update,
+                checkbox_key=spec["update"],
+                tooltip=tooltip,
+            )
 
     def _section_label(self, parent, row, text, columns=3):
         ttk.Label(parent, text=text, font=("", 10, "bold")).grid(row=row, column=0, columnspan=columns, sticky="w", pady=(10, 4))
@@ -6569,6 +6682,7 @@ class SamplerAdvGui:
         lab = ttk.Label(parent, text=label)
         lab.grid(row=row, column=1, sticky="w", padx=4, pady=3)
         add_tooltip(lab, tooltip)
+        lab.bind("<Button-1>", lambda _event, var=cb_var: var.set(not bool(var.get())))
 
         number_var = tk.StringVar(value=default_number)
         unit_var = tk.StringVar(value=default_unit)
@@ -6597,6 +6711,7 @@ class SamplerAdvGui:
         lab = ttk.Label(parent, text=label)
         lab.grid(row=row, column=1, sticky="w", padx=4, pady=3)
         add_tooltip(lab, tooltip)
+        lab.bind("<Button-1>", lambda _event, var=cb_var: var.set(not bool(var.get())))
 
         choice_var = tk.StringVar(value=default)
         self.global_vars[choice_key] = choice_var
@@ -6659,11 +6774,13 @@ class SamplerAdvGui:
         var_update = tk.BooleanVar(value=False)
         if checkbox_store is not None:
             checkbox_store[cb_key] = var_update
-        ttk.Checkbutton(parent, variable=var_update).grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
+        update_cb = ttk.Checkbutton(parent, variable=var_update)
+        update_cb.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
 
         lab = ttk.Label(parent, text=label)
         lab.grid(row=row, column=1, sticky="w", padx=4, pady=3)
         add_tooltip(lab, tooltip)
+        lab.bind("<Button-1>", lambda _event, var=var_update: var.set(not bool(var.get())))
 
         value_var = tk.BooleanVar(value=default)
         self.global_vars[key] = value_var
@@ -6804,7 +6921,7 @@ class SamplerAdvGui:
         _split_cb, _split_mode, self.split_mode_selector_frame, self.split_mode_label, self.split_mode_combo = self._checkbox_choice_row(
             zone_box,
             zrow,
-            "Enable split processing",
+            "Split zones",
             "split_zones",
             "Mode",
             "param_split_mode",
@@ -7127,6 +7244,7 @@ class SamplerAdvGui:
         release_stop_label = ttk.Label(release_loop_options, text="Stop")
         release_stop_label.grid(row=subrow, column=1, sticky="w", padx=4, pady=3)
         add_tooltip(release_stop_label, "Write the release-loop stop value. Release-loop stop is the sample stop.")
+        release_stop_label.bind("<Button-1>", lambda _event, var=release_stop_var: var.set(not bool(var.get())))
         release_stop_value = ttk.Label(release_loop_options, text="sample stop")
         release_stop_value.grid(row=subrow, column=2, sticky="w", padx=4, pady=3)
         add_tooltip(release_stop_value, "Write the release-loop stop value. Release-loop stop is the sample stop.")
@@ -7343,18 +7461,27 @@ class SamplerAdvGui:
         preset_box.columnconfigure(2, weight=1)
         drow = 0
 
-        default_tune_scale_var = self._checkbox_row(preset_box, drow, "Tune scale", "default_tune_scale", store=self.global_update, tooltip="Write the same TuneScale value to every zone after any split, so newly created slices inherit it too.")
+        preset_basics_var = self._expander_row(preset_box, drow, "Preset basics", "preset_basics_panel", tooltip="Show tune scale, voice count, and round-robin settings.")
         drow += 1
-        default_tune_scale_options = ttk.Frame(preset_box)
-        default_tune_scale_options.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        default_tune_scale_options.columnconfigure(2, weight=1)
-        self._param_row(default_tune_scale_options, 0, "Value", "param_default_tune_scale", "100", tooltip="Sampler pitch scale / TuneScale value applied to all zones.")
-        self._register_visibility_rule(default_tune_scale_var, default_tune_scale_options)
-        drow += 1
-
+        preset_basics_frame = ttk.Frame(preset_box)
+        preset_basics_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        preset_basics_frame.columnconfigure(2, weight=1)
+        self._register_visibility_rule(preset_basics_var, preset_basics_frame)
+        brow = 0
+        self._param_row(
+            preset_basics_frame,
+            brow,
+            "Tune scale",
+            "param_default_tune_scale",
+            "100",
+            checkbox_store=self.global_update,
+            checkbox_key="default_tune_scale",
+            tooltip="Sampler pitch scale / TuneScale value applied to all zones.",
+        )
+        brow += 1
         self._choice_row(
-            preset_box,
-            drow,
+            preset_basics_frame,
+            brow,
             "Voices",
             "voices",
             VOICE_COUNT_CHOICES,
@@ -7363,12 +7490,12 @@ class SamplerAdvGui:
             "voices",
             tooltip="Maximum number of simultaneous voices."
         )
-        drow += 1
-        self._bool_value_row(preset_box, drow, "Round robin", "rr", True, self.global_update, "rr", tooltip="Enable or disable round robin playback.")
-        drow += 1
+        brow += 1
+        self._bool_value_row(preset_basics_frame, brow, "Round robin", "rr", True, self.global_update, "rr", tooltip="Enable or disable round robin playback.")
+        brow += 1
         self._choice_row(
-            preset_box,
-            drow,
+            preset_basics_frame,
+            brow,
             "Round robin type",
             "rr_mode",
             list(ROUND_ROBIN_MODE_LABEL_TO_VALUE.keys()),
@@ -7377,10 +7504,10 @@ class SamplerAdvGui:
             "rr_mode",
             tooltip="Round robin playback order."
         )
-        drow += 1
+        brow += 1
         self._choice_row(
-            preset_box,
-            drow,
+            preset_basics_frame,
+            brow,
             "Round robin reset",
             "rr_reset",
             list(ROUND_ROBIN_RESET_LABEL_TO_VALUE.keys()),
@@ -7390,48 +7517,42 @@ class SamplerAdvGui:
             tooltip="Reset period for round robin playback."
         )
         drow += 1
-        self._entry_row(preset_box, drow, "Round robin seed", "rr_seed", self.global_vars, self.global_update, "rr_seed")
-        drow += 1
-        generic_lfo_var = self._expander_row(preset_box, drow, "LFO / routing parameters", "generic_lfo_panel", tooltip="Show preset LFO Manual parameters and modulation-routing values.")
+        generic_lfo_var = self._expander_row(preset_box, drow, "LFO parameters", "generic_lfo_panel", tooltip="Show preset LFO parameters.")
         drow += 1
         self.generic_lfo_frame = ttk.Frame(preset_box)
         self.generic_lfo_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        self.generic_lfo_frame.columnconfigure(0, weight=1)
+        self.generic_lfo_frame.columnconfigure(2, weight=1)
         self._register_visibility_rule(generic_lfo_var, self.generic_lfo_frame)
         drow += 1
 
-        planned_envelope_time_var = self._checkbox_row(preset_box, drow, "Envelope in ms", "planned_envelope_time", store=self.global_update, tooltip="Write the global amplitude-envelope timing values.")
+        generic_midi_var = self._expander_row(preset_box, drow, "MIDI parameters", "generic_midi_panel", tooltip="Show key, velocity, release-velocity, and MIDI controller routing.")
         drow += 1
-        planned_envelope_time_options = ttk.Frame(preset_box)
-        planned_envelope_time_options.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        planned_envelope_time_options.columnconfigure(2, weight=1)
-        self._inline_params_row(planned_envelope_time_options, 0, [
-            ("A", "param_env_attack_ms", "0.2", 7),
-            ("D", "param_env_decay_ms", "1000", 7),
-            ("S", "param_env_sustain", "1", 7),
-            ("R", "param_env_release_ms", "20", 7),
-        ], tooltip="Amplitude envelope values in ms except sustain level.")
-        self._register_visibility_rule(planned_envelope_time_var, planned_envelope_time_options)
+        self.generic_midi_frame = ttk.Frame(preset_box)
+        self.generic_midi_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        self.generic_midi_frame.columnconfigure(2, weight=1)
+        self._register_visibility_rule(generic_midi_var, self.generic_midi_frame)
         drow += 1
 
-        planned_envelope_shape_var = self._checkbox_row(preset_box, drow, "Envelope shape", "planned_envelope_shape", store=self.global_update, tooltip="Write the global amplitude-envelope slope values.")
+        envelope_var = self._expander_row(preset_box, drow, "Envelope", "envelope_panel", tooltip="Show global amplitude-envelope timing and shape parameters.")
         drow += 1
-        planned_envelope_shape_options = ttk.Frame(preset_box)
-        planned_envelope_shape_options.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        planned_envelope_shape_options.columnconfigure(2, weight=1)
-        self._inline_params_row(planned_envelope_shape_options, 0, [
-            ("A %", "param_env_attack_shape", "0", 7),
-            ("D %", "param_env_decay_shape", "0", 7),
-            ("R %", "param_env_release_shape", "0", 7),
-        ], tooltip="Envelope shape percentages.")
-        self._register_visibility_rule(planned_envelope_shape_var, planned_envelope_shape_options)
+        envelope_options = ttk.Frame(preset_box)
+        envelope_options.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        envelope_options.columnconfigure(2, weight=1)
+        self._param_row(envelope_options, 0, "Attack ms", "param_env_attack_ms", "0.2", checkbox_store=self.global_update, checkbox_key="param_env_attack_ms", tooltip="Write amplitude-envelope attack time in milliseconds.")
+        self._param_row(envelope_options, 1, "Decay ms", "param_env_decay_ms", "1000", checkbox_store=self.global_update, checkbox_key="param_env_decay_ms", tooltip="Write amplitude-envelope decay time in milliseconds.")
+        self._param_row(envelope_options, 2, "Sustain", "param_env_sustain", "1", checkbox_store=self.global_update, checkbox_key="param_env_sustain", tooltip="Write amplitude-envelope sustain level.")
+        self._param_row(envelope_options, 3, "Release ms", "param_env_release_ms", "20", checkbox_store=self.global_update, checkbox_key="param_env_release_ms", tooltip="Write amplitude-envelope release time in milliseconds.")
+        self._param_row(envelope_options, 4, "Attack shape %", "param_env_attack_shape", "0", checkbox_store=self.global_update, checkbox_key="param_env_attack_shape", tooltip="Write amplitude-envelope attack slope as a percentage.")
+        self._param_row(envelope_options, 5, "Decay shape %", "param_env_decay_shape", "0", checkbox_store=self.global_update, checkbox_key="param_env_decay_shape", tooltip="Write amplitude-envelope decay slope as a percentage.")
+        self._param_row(envelope_options, 6, "Release shape %", "param_env_release_shape", "0", checkbox_store=self.global_update, checkbox_key="param_env_release_shape", tooltip="Write amplitude-envelope release slope as a percentage.")
+        self._register_visibility_rule(envelope_var, envelope_options)
         drow += 1
 
         generic_filter_var = self._expander_row(preset_box, drow, "Filter settings", "generic_filter_panel", tooltip="Show preset filter and shaper parameters.")
         drow += 1
         self.generic_filter_frame = ttk.Frame(preset_box)
         self.generic_filter_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        self.generic_filter_frame.columnconfigure(0, weight=1)
+        self.generic_filter_frame.columnconfigure(2, weight=1)
         self._register_visibility_rule(generic_filter_var, self.generic_filter_frame)
         drow += 1
 
@@ -7439,7 +7560,7 @@ class SamplerAdvGui:
         drow += 1
         self.generic_aux_env_frame = ttk.Frame(preset_box)
         self.generic_aux_env_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        self.generic_aux_env_frame.columnconfigure(0, weight=1)
+        self.generic_aux_env_frame.columnconfigure(2, weight=1)
         self._register_visibility_rule(generic_aux_env_var, self.generic_aux_env_frame)
         drow += 1
 
@@ -7447,15 +7568,15 @@ class SamplerAdvGui:
         drow += 1
         self.generic_pitch_env_frame = ttk.Frame(preset_box)
         self.generic_pitch_env_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        self.generic_pitch_env_frame.columnconfigure(0, weight=1)
+        self.generic_pitch_env_frame.columnconfigure(2, weight=1)
         self._register_visibility_rule(generic_pitch_env_var, self.generic_pitch_env_frame)
         drow += 1
 
-        generic_sub_osc_var = self._expander_row(preset_box, drow, "Sub oscillator parameters", "generic_sub_osc_panel", tooltip="Show sub oscillator parameters.")
+        generic_sub_osc_var = self._expander_row(preset_box, drow, "Osc parameters", "generic_sub_osc_panel", tooltip="Show oscillator parameters.")
         drow += 1
         self.generic_sub_osc_frame = ttk.Frame(preset_box)
         self.generic_sub_osc_frame.grid(row=drow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        self.generic_sub_osc_frame.columnconfigure(0, weight=1)
+        self.generic_sub_osc_frame.columnconfigure(2, weight=1)
         self._register_visibility_rule(generic_sub_osc_var, self.generic_sub_osc_frame)
         drow += 1
 
@@ -7553,6 +7674,7 @@ class SamplerAdvGui:
                 else:
                     store[k].set(bool(val))
         migrate_generic_panel_write_flags(DEFAULT_TOOL_TEMPLATE, self.global_update)
+        migrate_envelope_write_flags(DEFAULT_TOOL_TEMPLATE, self.global_update)
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
             if split_mode == "off":
@@ -7641,6 +7763,7 @@ class SamplerAdvGui:
 
         migrate_loop_write_flags(data, self.processing_update)
         migrate_generic_panel_write_flags(data, self.global_update)
+        migrate_envelope_write_flags(data, self.global_update)
 
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
@@ -7821,6 +7944,7 @@ class SamplerAdvGui:
             self.clear_waveform_caches(reset_audio=True)
             self.reset_waveform_view()
             self.rebuild_generic_lfo_fields()
+            self.rebuild_generic_midi_fields()
             self.rebuild_generic_filter_fields()
             self.rebuild_generic_aux_env_fields()
             self.rebuild_generic_pitch_env_fields()
@@ -7869,6 +7993,12 @@ class SamplerAdvGui:
         self.zone_count_var.set(str(self.model.zone_count()))
         self.refresh_zone_list()
         self.clear_zone_editor()
+        self.rebuild_generic_lfo_fields()
+        self.rebuild_generic_midi_fields()
+        self.rebuild_generic_filter_fields()
+        self.rebuild_generic_aux_env_fields()
+        self.rebuild_generic_pitch_env_fields()
+        self.rebuild_generic_sub_osc_fields()
         self.load_global_settings()
         if self.model.zone_count() > 0:
             self.select_zone_index(self.model.zone_count() - 1)
@@ -8287,7 +8417,7 @@ class SamplerAdvGui:
         except Exception as e:
             self.show_error("Could not detect {} loop detune".format(loop_label), e)
 
-    def schedule_waveform_refresh(self, *_args):
+    def schedule_waveform_refresh(self, *_args, delay_ms=WAVEFORM_REFRESH_DEBOUNCE_MS):
         if not hasattr(self, "waveform_canvas"):
             return
         if self.waveform_refresh_after_id is not None:
@@ -8295,7 +8425,7 @@ class SamplerAdvGui:
                 self.root.after_cancel(self.waveform_refresh_after_id)
             except Exception:
                 pass
-        self.waveform_refresh_after_id = self.root.after(30, self.update_waveform_preview)
+        self.waveform_refresh_after_id = self.root.after(delay_ms, self.update_waveform_preview)
 
     def draw_waveform_message(self, title, detail=""):
         if not hasattr(self, "waveform_canvas"):
@@ -9677,6 +9807,12 @@ class SamplerAdvGui:
         setattr(self, dynamic_keys_attr, [])
 
         inner = getattr(frame, "inner", frame)
+        try:
+            inner.columnconfigure(0, weight=0)
+            inner.columnconfigure(1, weight=0)
+            inner.columnconfigure(2, weight=1)
+        except Exception:
+            pass
         for widget in list(inner.winfo_children()):
             widget.destroy()
 
@@ -9702,7 +9838,7 @@ class SamplerAdvGui:
                 if enum_id == "__hidden__":
                     continue
                 key = key_prefix + path
-                label = path.split("/", 1)[1] if "/" in path else path
+                label = friendly_parameter_label(path, title)
                 tooltip = "Value written directly to {}".format(path)
                 if enum_id:
                     self._choice_row(
@@ -9741,6 +9877,15 @@ class SamplerAdvGui:
                 getattr(self, dynamic_keys_attr).append(key)
                 row += 1
 
+    @staticmethod
+    def _split_params(params, bonus_suffixes):
+        visible = []
+        bonus = []
+        for path, value in params:
+            target = bonus if any(str(path).endswith(suffix) for suffix in bonus_suffixes) else visible
+            target.append((path, value))
+        return visible, bonus
+
     def rebuild_generic_lfo_fields(self):
         if self.model is None:
             self._rebuild_generic_group_frame(
@@ -9751,12 +9896,69 @@ class SamplerAdvGui:
             )
             return
         groups = []
-        for base_path in ("Lfo", "AuxLfos.0", "AuxLfos.0/Slot/Value/SimplerAuxLfo", "AuxLfos.1", "AuxLfos.1/Slot/Value/SimplerAuxLfo"):
-            if base_path in OPTIONAL_GENERIC_MANUAL_BASES and not generic_manual_group_has_existing_content(self.model.root, base_path):
-                continue
+        lfo_group_defs = (
+            ("Lfo", "LFO 1", ("Slot/Value/SimplerLfo/Smooth", "Slot/Value/SimplerLfo/Attack", "Slot/Value/SimplerLfo/Retrigger", "Slot/Value/SimplerLfo/Width")),
+            ("AuxLfos.0", "LFO 2", ()),
+            ("AuxLfos.0/Slot/Value/SimplerAuxLfo", "LFO 2", ()),
+            ("AuxLfos.1", "LFO 3", ()),
+            ("AuxLfos.1/Slot/Value/SimplerAuxLfo", "LFO 3", ()),
+        )
+        for base_path, title, bonus_suffixes in lfo_group_defs:
             params = merged_template_manual_paths(self.model.root, base_path)
             if params:
-                groups.append((base_path, "manual", "param_lfo_manual::", params))
+                visible_params, bonus_params = self._split_params(params, bonus_suffixes)
+                if visible_params:
+                    groups.append((title, "manual", "param_lfo_manual::", visible_params))
+                if bonus_params:
+                    groups.append((title + " bonus", "manual", "param_lfo_manual::", bonus_params))
+        for base_path in (
+            "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst",
+            "AuxLfos.1/Slot/Value/SimplerAuxLfo/ModDst",
+        ):
+            if base_path in OPTIONAL_GENERIC_VALUE_BASES and not generic_value_group_has_existing_content(self.model.root, base_path):
+                continue
+            params = merged_template_value_paths(self.model.root, base_path)
+            if params:
+                title = "LFO 2 ModDst" if base_path.startswith("AuxLfos.0") else "LFO 3 ModDst"
+                groups.append((title, "value", "param_lfo_value::", params))
+        self._rebuild_generic_group_frame(
+            "generic_lfo_frame",
+            "dynamic_lfo_keys",
+            groups,
+            "Open an ADV to inspect LFO parameters.",
+        )
+
+    def rebuild_generic_midi_fields(self):
+        frame = getattr(self, "generic_midi_frame", None)
+        if frame is None:
+            return
+
+        for key in list(getattr(self, "dynamic_midi_keys", [])):
+            self.global_vars.pop(key, None)
+        self.dynamic_midi_keys = []
+
+        inner = getattr(frame, "inner", frame)
+        try:
+            inner.columnconfigure(0, weight=0)
+            inner.columnconfigure(1, weight=0)
+            inner.columnconfigure(2, weight=1)
+        except Exception:
+            pass
+        for widget in list(inner.winfo_children()):
+            widget.destroy()
+
+        row = 0
+        ttk.Label(inner, text="Pitch bend", font=("", 9, "bold")).grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=(2, 2))
+        row += 1
+        for spec in MIDI_PARAMETER_FIELD_SPECS:
+            self._build_default_preset_field_row(inner, row, spec)
+            row += 1
+
+        if self.model is None:
+            ttk.Label(inner, text="Open an ADV to inspect MIDI routing parameters.").grid(row=row, column=0, sticky="w", padx=4, pady=4)
+            return
+
+        groups = []
         for base_path in (
             "KeyDst",
             "VelDst",
@@ -9769,20 +9971,64 @@ class SamplerAdvGui:
             "MidiCtrl.5",
             "MidiCtrl.6",
             "MidiCtrl.7",
-            "AuxLfos.0/Slot/Value/SimplerAuxLfo/ModDst",
-            "AuxLfos.1/Slot/Value/SimplerAuxLfo/ModDst",
         ):
             if base_path in OPTIONAL_GENERIC_VALUE_BASES and not generic_value_group_has_existing_content(self.model.root, base_path):
                 continue
             params = merged_template_value_paths(self.model.root, base_path)
             if params:
-                groups.append((base_path, "value", "param_lfo_value::", params))
-        self._rebuild_generic_group_frame(
-            "generic_lfo_frame",
-            "dynamic_lfo_keys",
-            groups,
-            "Open an ADV to inspect modulation parameters.",
-        )
+                groups.append((base_path, "value", "param_midi_value::", params))
+
+        built_groups = [(title, value_kind, key_prefix, params) for title, value_kind, key_prefix, params in groups if params]
+        if not built_groups:
+            ttk.Label(inner, text="No MIDI routing parameters found.").grid(row=row, column=0, sticky="w", padx=4, pady=4)
+            return
+
+        for title, _value_kind, key_prefix, params in built_groups:
+            ttk.Label(inner, text=title, font=("", 9, "bold")).grid(row=row, column=0, columnspan=2, sticky="w", padx=4, pady=(6 if row else 2, 2))
+            row += 1
+            for path, value in params:
+                enum_id = enum_id_for_path(path)
+                if enum_id == "__hidden__":
+                    continue
+                key = key_prefix + path
+                label = friendly_parameter_label(path, title)
+                tooltip = "Value written directly to {}".format(path)
+                if enum_id:
+                    self._choice_row(
+                        inner,
+                        row,
+                        label,
+                        key,
+                        enum_choices(enum_id),
+                        enum_label_from_value(enum_id, value),
+                        checkbox_store=self.global_update,
+                        checkbox_key=key,
+                        tooltip=tooltip,
+                    )
+                elif value_looks_bool(value):
+                    self._bool_value_row(
+                        inner,
+                        row,
+                        label,
+                        key,
+                        bool_from_value(value),
+                        checkbox_store=self.global_update,
+                        checkbox_key=key,
+                        tooltip=tooltip,
+                    )
+                else:
+                    self._param_row(
+                        inner,
+                        row,
+                        label,
+                        key,
+                        float_to_text(value),
+                        checkbox_store=self.global_update,
+                        checkbox_key=key,
+                        tooltip=tooltip,
+                    )
+                self.dynamic_midi_keys.append(key)
+                row += 1
 
     def rebuild_generic_filter_fields(self):
         if self.model is None:
@@ -9797,7 +10043,23 @@ class SamplerAdvGui:
         for base_path in ("Filter", "Shaper"):
             params = merged_template_manual_paths(self.model.root, base_path)
             if params:
-                groups.append((base_path, "manual", "param_filter_manual::", params))
+                if base_path == "Filter":
+                    visible_params, bonus_params = self._split_params(
+                        params,
+                        (
+                            "Slot/Value/SimplerFilter/LegacyQ",
+                            "Slot/Value/SimplerFilter/X",
+                            "Slot/Value/SimplerFilter/ModByPitch",
+                            "Slot/Value/SimplerFilter/ModByVelocity",
+                            "Slot/Value/SimplerFilter/ModByLfo",
+                        ),
+                    )
+                    if visible_params:
+                        groups.append(("Filter", "manual", "param_filter_manual::", visible_params))
+                    if bonus_params:
+                        groups.append(("Filter bonus", "manual", "param_filter_manual::", bonus_params))
+                else:
+                    groups.append((base_path, "manual", "param_filter_manual::", params))
         for base_path in ("Filter",):
             params = list_value_parameter_paths(self.model.root, base_path)
             value_only = [(path, value) for path, value in params if path.endswith("CurrentOverlay") or path.endswith("ScrollPosition")]
@@ -9865,12 +10127,12 @@ class SamplerAdvGui:
         groups = []
         manual_params = merged_template_manual_paths(self.model.root, "Player/SubOsc")
         if manual_params:
-            groups.append(("Player/SubOsc", "manual", "param_sub_osc_manual::", manual_params))
+            groups.append(("Osc", "manual", "param_sub_osc_manual::", manual_params))
         self._rebuild_generic_group_frame(
             "generic_sub_osc_frame",
             "dynamic_sub_osc_keys",
             groups,
-            "Open an ADV to inspect sub oscillator parameters.",
+            "Open an ADV to inspect oscillator parameters.",
         )
 
     # -------------------------------------------------------------------------
