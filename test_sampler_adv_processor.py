@@ -820,6 +820,66 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(ranges[1], {"min": "43", "max": "84", "xfade_min": "43", "xfade_max": "84"})
         self.assertEqual(ranges[2], {"min": "85", "max": "127", "xfade_min": "85", "xfade_max": "127"})
 
+    def test_extend_key_ranges_only_fills_uncovered_gaps(self):
+        full_velocity = {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"}
+        full_selector = {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"}
+        model = FakeRangeModel([
+            ({"min": "20", "max": "30", "xfade_min": "20", "xfade_max": "30"}, full_velocity, full_selector),
+            ({"min": "40", "max": "50", "xfade_min": "40", "xfade_max": "50"}, full_velocity, full_selector),
+            ({"min": "45", "max": "60", "xfade_min": "45", "xfade_max": "60"}, full_velocity, full_selector),
+        ])
+
+        count = MODULE.SamplerProcessors.spread_key_zones(model, {"param_key_spread_mode": "extend"})
+
+        self.assertEqual(count, 3)
+        ranges = [model.read_range(model.get_zone(i), "KeyRange") for i in range(model.zone_count())]
+        self.assertEqual(ranges[0], {"min": "0", "max": "35", "xfade_min": "0", "xfade_max": "35"})
+        self.assertEqual(ranges[1], {"min": "36", "max": "50", "xfade_min": "36", "xfade_max": "50"})
+        self.assertEqual(ranges[2], {"min": "45", "max": "127", "xfade_min": "45", "xfade_max": "127"})
+
+    def test_extend_velocity_and_chain_ranges_fill_gaps_by_area(self):
+        full_key = {"min": "60", "max": "72", "xfade_min": "60", "xfade_max": "72"}
+        selector_a = {"min": "0", "max": "0", "xfade_min": "0", "xfade_max": "0"}
+        selector_b = {"min": "8", "max": "8", "xfade_min": "8", "xfade_max": "8"}
+        velocity_a = {"min": "20", "max": "30", "xfade_min": "20", "xfade_max": "30"}
+        velocity_b = {"min": "50", "max": "60", "xfade_min": "50", "xfade_max": "60"}
+        velocity_model = FakeRangeModel([
+            (full_key, velocity_a, selector_a),
+            (full_key, velocity_b, selector_a),
+            (full_key, velocity_a, selector_b),
+        ])
+
+        velocity_count = MODULE.SamplerProcessors.extend_range_gaps(
+            velocity_model,
+            "VelocityRange",
+            1,
+            127,
+            grouping_fields=("KeyRange", "SelectorRange"),
+        )
+
+        self.assertEqual(velocity_count, 3)
+        self.assertEqual(velocity_model.read_range(velocity_model.get_zone(0), "VelocityRange"), {"min": "1", "max": "40", "xfade_min": "1", "xfade_max": "40"})
+        self.assertEqual(velocity_model.read_range(velocity_model.get_zone(1), "VelocityRange"), {"min": "41", "max": "127", "xfade_min": "41", "xfade_max": "127"})
+        self.assertEqual(velocity_model.read_range(velocity_model.get_zone(2), "VelocityRange"), {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"})
+
+        chain_model = FakeRangeModel([
+            (full_key, velocity_a, selector_a),
+            (full_key, velocity_b, selector_a),
+            (full_key, velocity_a, selector_b),
+        ])
+        chain_count = MODULE.SamplerProcessors.extend_range_gaps(
+            chain_model,
+            "SelectorRange",
+            0,
+            127,
+            grouping_fields=("KeyRange", "VelocityRange"),
+        )
+
+        self.assertEqual(chain_count, 3)
+        self.assertEqual(chain_model.read_range(chain_model.get_zone(0), "SelectorRange"), {"min": "0", "max": "4", "xfade_min": "0", "xfade_max": "4"})
+        self.assertEqual(chain_model.read_range(chain_model.get_zone(1), "SelectorRange"), {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"})
+        self.assertEqual(chain_model.read_range(chain_model.get_zone(2), "SelectorRange"), {"min": "5", "max": "127", "xfade_min": "5", "xfade_max": "127"})
+
     def test_auto_volume_velocity_scale_sets_global_amount_from_average_layers(self):
         model = self.load_model("test02.adv")
 
@@ -2303,6 +2363,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "globals_env_include_attack": False,
                 "mmap_load_in_ram": True,
                 "mmap_layer_crossfade": "0.35",
+                "view_zone_editor_visible": False,
                 "preset_user_name": "renamed preset",
                 "preset_creator": "Codex Test",
             },
@@ -2321,6 +2382,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 "globals_env_include_attack": True,
                 "mmap_load_in_ram": True,
                 "mmap_layer_crossfade": True,
+                "view_zone_editor_visible": True,
                 "preset_user_name": True,
                 "preset_creator": True,
             },
@@ -2341,6 +2403,7 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Globals/EnvScale/EnvTimeIncludeAttack"), "false")
         self.assertEqual(MODULE.get_value_by_path(model.root, "MultiSampleMap/LoadInRam"), "true")
         self.assertEqual(MODULE.get_value_by_path(model.root, "MultiSampleMap/LayerCrossfade"), "0.35")
+        self.assertEqual(MODULE.get_value_by_path(model.root, "ViewSettings/ZoneEditorVisible"), "false")
         self.assertEqual(MODULE.find_first_value_node_by_tag(model.root, "UserName").attrib.get("Value"), "renamed preset")
         self.assertEqual(model.creator(), "Codex Test")
         self.assertEqual(MODULE.get_manual_value_by_path(model.root, "Player/SubOsc/IsOn"), "false")
@@ -2398,6 +2461,58 @@ class SamplerAdvProcessorTests(unittest.TestCase):
                 model.extract_sample_path(model.get_zone(0))[1],
                 MODULE.os.path.relpath(str(sample_path), str(adv_dir)).replace("\\", "/"),
             )
+
+    def test_extract_sample_path_supports_relative_path_elements(self):
+        zone = MODULE.ET.Element("MultiSamplePart")
+        sample_ref = MODULE.ET.SubElement(zone, "SampleRef")
+        file_ref = MODULE.ET.SubElement(sample_ref, "FileRef")
+        rel = MODULE.ET.SubElement(file_ref, "RelativePath")
+        MODULE.ET.SubElement(rel, "RelativePathElement", Dir="Samples")
+        MODULE.ET.SubElement(rel, "RelativePathElement", Dir="Imported")
+        MODULE.ET.SubElement(rel, "RelativePathElement", Dir="Scc1t2")
+        name = MODULE.ET.SubElement(file_ref, "Name")
+        name.set("Value", "SYNVX70.aif")
+        data = MODULE.ET.SubElement(file_ref, "Data")
+        data.text = "43003A005C0064006100740061005C00550073006500720020004C006900620072006100720079005C00530059004E0056005800370030002E006100690066000000"
+        search_hint = MODULE.ET.SubElement(file_ref, "SearchHint")
+        path_hint = MODULE.ET.SubElement(search_hint, "PathHint")
+        MODULE.ET.SubElement(path_hint, "RelativePathElement", Dir="data")
+        MODULE.ET.SubElement(path_hint, "RelativePathElement", Dir="ableton 9 library")
+        MODULE.ET.SubElement(path_hint, "RelativePathElement", Dir="User Library")
+        MODULE.ET.SubElement(path_hint, "RelativePathElement", Dir="Samples")
+        MODULE.ET.SubElement(path_hint, "RelativePathElement", Dir="Imported")
+        MODULE.ET.SubElement(path_hint, "RelativePathElement", Dir="Scc1t2")
+        model = MODULE.SamplerAdvModel.__new__(MODULE.SamplerAdvModel)
+
+        sample_path, relative_path = model.extract_sample_path(zone)
+
+        self.assertEqual(relative_path, "Samples/Imported/Scc1t2/SYNVX70.aif")
+        self.assertEqual(sample_path, "C:\\data\\User Library\\SYNVX70.aif")
+
+    def test_resolve_sample_file_falls_back_to_basename_search(self):
+        zone = MODULE.ET.Element("MultiSamplePart")
+        sample_ref = MODULE.ET.SubElement(zone, "SampleRef")
+        file_ref = MODULE.ET.SubElement(sample_ref, "FileRef")
+        path = MODULE.ET.SubElement(file_ref, "Path")
+        path.set("Value", "C:\\missing\\SYNVX70.aif")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            adv_dir = tmp / "Presets"
+            sample_dir = tmp / "Samples" / "Imported"
+            adv_dir.mkdir()
+            sample_dir.mkdir(parents=True)
+            sample_path = sample_dir / "SYNVX70.aif"
+            sample_path.write_bytes(b"AIFF")
+
+            model = MODULE.SamplerAdvModel.__new__(MODULE.SamplerAdvModel)
+            model.source_path = adv_dir / "preset.adv"
+
+            self.assertEqual(model.resolve_sample_file(zone), sample_path.resolve())
+
+    def test_app_backup_dir_is_next_to_processor_script(self):
+        self.assertEqual(MODULE.app_backup_dir(), Path(MODULE.__file__).resolve().parent / "_adv_backups")
+        self.assertEqual(MODULE.next_backup_path(Path("somewhere") / "preset.adv").parent, MODULE.app_backup_dir())
 
     def test_relink_samples_from_folder_matches_by_basename(self):
         model = self.load_model("test01.adv")

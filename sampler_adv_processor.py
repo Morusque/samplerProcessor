@@ -54,6 +54,21 @@ DEFAULT_TOOL_TEMPLATE_PATH = TEMPLATE_LIBRARY_DIR / "default values 01.json"
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".aif", ".aiff", ".flac", ".ogg", ".mp3", ".m4a", ".caf"}
 
 
+def app_backup_dir():
+    return Path(__file__).resolve().parent / "_adv_backups"
+
+
+def next_backup_path(source_path):
+    source_path = Path(source_path)
+    backup_dir = app_backup_dir()
+    backup_path = backup_dir / source_path.name
+    counter = 1
+    while backup_path.exists():
+        backup_path = backup_dir / (source_path.stem + "_" + str(counter) + source_path.suffix)
+        counter += 1
+    return backup_path
+
+
 def load_default_tool_template():
     try:
         if DEFAULT_TOOL_TEMPLATE_PATH.exists():
@@ -642,6 +657,7 @@ DEFAULT_PRESET_SIMPLE_SECTIONS = [
         "title": "Multisample Map / Identity",
         "fields": [
             {"kind": "bool", "label": "Load in RAM", "key": "mmap_load_in_ram", "update": "mmap_load_in_ram", "storage": "value", "path": "MultiSampleMap/LoadInRam", "default": False},
+            {"kind": "bool", "label": "Show zones panel", "key": "view_zone_editor_visible", "update": "view_zone_editor_visible", "storage": "value", "path": "ViewSettings/ZoneEditorVisible", "default": False},
             {"kind": "entry", "label": "Preset name", "key": "preset_user_name", "update": "preset_user_name", "storage": "tag", "path": "UserName", "default": ""},
             {"kind": "entry", "label": "Creator", "key": "preset_creator", "update": "preset_creator", "storage": "root_attr", "path": "Creator", "default": ""},
         ],
@@ -721,6 +737,38 @@ def set_value_if_exists(parent, tag, value):
         node.set("Value", str(value))
         return True
     return False
+
+
+def relative_path_elements_text(parent):
+    if parent is None:
+        return ""
+    parts = []
+    for elem in parent.findall("RelativePathElement"):
+        part = elem.attrib.get("Dir", "")
+        if part:
+            parts.append(part)
+    return "/".join(parts)
+
+
+def file_ref_data_path(file_ref):
+    data_node = child(file_ref, "Data")
+    if data_node is None or not data_node.text:
+        return ""
+    hex_text = re.sub(r"\s+", "", data_node.text)
+    if not hex_text:
+        return ""
+    try:
+        raw = bytes.fromhex(hex_text)
+    except Exception:
+        return ""
+    for encoding in ("utf-16-le", "utf-8"):
+        try:
+            text = raw.decode(encoding, errors="ignore").strip("\x00").strip()
+        except Exception:
+            continue
+        if text:
+            return text
+    return ""
 
 
 def find_first_value_node_by_tag(root, tag):
@@ -1404,7 +1452,24 @@ class SamplerAdvModel:
         file_ref = self.sample_file_ref(zone)
         if file_ref is None:
             return "", ""
-        return get_value(file_ref, "Path", ""), get_value(file_ref, "RelativePath", "")
+        sample_path = get_value(file_ref, "Path", "")
+        relative_path = get_value(file_ref, "RelativePath", "")
+        sample_name = get_value(file_ref, "Name", "")
+
+        if not relative_path:
+            relative_path = relative_path_elements_text(child(file_ref, "RelativePath"))
+            if relative_path and sample_name:
+                relative_path = "/".join([relative_path.rstrip("/"), sample_name])
+
+        if not sample_path:
+            sample_path = file_ref_data_path(file_ref)
+            if not sample_path:
+                path_hint = file_ref.find(".//SearchHint/PathHint")
+                sample_path = relative_path_elements_text(path_hint)
+                if sample_path and sample_name:
+                    sample_path = "/".join([sample_path.rstrip("/"), sample_name])
+
+        return sample_path, relative_path
 
     def set_zone_sample_reference(self, zone, absolute_path=None, relative_path=None, relative_path_type=None):
         file_ref = self.sample_file_ref(zone)
@@ -1421,12 +1486,18 @@ class SamplerAdvModel:
     def resolve_sample_file(self, zone):
         sample_path, relative_path = self.extract_sample_path(zone)
         candidates = []
+        sample_names = []
 
         if sample_path:
-            candidates.append(Path(sample_path))
+            path = Path(sample_path)
+            candidates.append(path)
+            if path.name:
+                sample_names.append(path.name)
 
         if relative_path and self.source_path is not None:
             rel = Path(relative_path)
+            if rel.name and rel.name not in sample_names:
+                sample_names.append(rel.name)
             for base in [self.source_path.parent] + list(self.source_path.parent.parents[:4]):
                 candidate = base / rel
                 if candidate not in candidates:
@@ -1438,6 +1509,25 @@ class SamplerAdvModel:
                     return candidate.resolve()
             except Exception:
                 pass
+
+        if sample_names and self.source_path is not None:
+            search_roots = [self.source_path.parent] + list(self.source_path.parent.parents[:2])
+            seen_roots = set()
+            for root in search_roots:
+                try:
+                    resolved_root = root.resolve()
+                except Exception:
+                    continue
+                if resolved_root in seen_roots or not resolved_root.exists():
+                    continue
+                seen_roots.add(resolved_root)
+                for sample_name in sample_names:
+                    try:
+                        match = next(resolved_root.rglob(sample_name), None)
+                    except Exception:
+                        match = None
+                    if match is not None:
+                        return match.resolve()
 
         if candidates:
             return candidates[0]
@@ -4718,6 +4808,76 @@ class SamplerProcessors:
         return count
 
     @staticmethod
+    def extend_range_gaps(model, tag, lo, hi, grouping_fields=(), log_func=None):
+        def log(text):
+            if log_func:
+                log_func(text)
+
+        groups = {}
+        for i in range(model.zone_count()):
+            zone = model.get_zone(i)
+            group_key = []
+            for group_tag in grouping_fields:
+                values = model.read_range(zone, group_tag)
+                group_key.extend([values["min"], values["max"]])
+            groups.setdefault(tuple(group_key), []).append(i)
+
+        updated = 0
+        changed_groups = 0
+        for _group_key, indices in sorted(groups.items(), key=lambda item: item[0]):
+            entries = []
+            for index in indices:
+                zone = model.get_zone(index)
+                values = model.read_range(zone, tag)
+                try:
+                    mn = clamp_int(values["min"], lo, hi)
+                    mx = clamp_int(values["max"], lo, hi)
+                except Exception:
+                    continue
+                if mx < mn:
+                    mn, mx = mx, mn
+                entries.append({"index": index, "orig_min": mn, "orig_max": mx, "new_min": mn, "new_max": mx})
+
+            if not entries:
+                continue
+
+            entries.sort(key=lambda item: (item["orig_min"], item["orig_max"], item["index"]))
+            entries[0]["new_min"] = lo
+            entries[-1]["new_max"] = hi
+
+            for left, right in zip(entries, entries[1:]):
+                if right["orig_min"] <= left["orig_max"] + 1:
+                    continue
+                boundary = int((left["orig_max"] + right["orig_min"]) // 2)
+                left["new_max"] = max(left["new_max"], boundary)
+                right["new_min"] = min(right["new_min"], boundary + 1)
+
+            group_changed = False
+            for entry in entries:
+                zone = model.get_zone(entry["index"])
+                previous = model.read_range(zone, tag)
+                next_values = model.validate_range(
+                    {
+                        "min": str(entry["new_min"]),
+                        "max": str(entry["new_max"]),
+                        "xfade_min": str(entry["new_min"]),
+                        "xfade_max": str(entry["new_max"]),
+                    },
+                    lo,
+                    hi,
+                )
+                if next_values != previous:
+                    model.write_range(zone, tag, next_values)
+                    updated += 1
+                    group_changed = True
+                    log("Extend {}: zone {} -> {}-{}\n".format(tag, entry["index"], next_values["min"], next_values["max"]))
+            if group_changed:
+                changed_groups += 1
+
+        log("Extend {}: updated {} zone(s) across {} group(s).\n".format(tag, updated, changed_groups))
+        return updated
+
+    @staticmethod
     def spread_key_zones(model, params, log_func=None):
         mode = str(params.get("param_key_spread_mode", "around root key")).strip().lower()
         if mode == "around root key":
@@ -4743,6 +4903,15 @@ class SamplerProcessors:
                 first_note=params.get("param_key_spread_first_note", "0"),
                 interval=params.get("param_key_spread_interval", "1"),
                 repeat_count=params.get("param_key_spread_repeat_count", "1"),
+                log_func=log_func,
+            )
+        if mode == "extend":
+            return SamplerProcessors.extend_range_gaps(
+                model,
+                "KeyRange",
+                0,
+                127,
+                grouping_fields=("VelocityRange", "SelectorRange"),
                 log_func=log_func,
             )
         if log_func:
@@ -5770,6 +5939,28 @@ class SamplerProcessors:
                 )
                 model.refresh()
 
+            elif mode == "extend velocity":
+                total_changes += SamplerProcessors.extend_range_gaps(
+                    model,
+                    "VelocityRange",
+                    1,
+                    127,
+                    grouping_fields=("KeyRange", "SelectorRange"),
+                    log_func=log_func,
+                )
+                model.refresh()
+
+            elif mode == "extend chain":
+                total_changes += SamplerProcessors.extend_range_gaps(
+                    model,
+                    "SelectorRange",
+                    0,
+                    127,
+                    grouping_fields=("KeyRange", "VelocityRange"),
+                    log_func=log_func,
+                )
+                model.refresh()
+
             else:
                 log("Multiple notes case: unknown mode; skipped.\n")
 
@@ -6084,6 +6275,7 @@ class SamplerAdvGui:
         ttk.Button(file_row, text="Apply", command=self.apply_changes_only).grid(row=0, column=6, padx=4)
         ttk.Button(file_row, text="Save as...", command=self.save_current_as).grid(row=0, column=7, padx=4)
         ttk.Button(file_row, text="Overwrite + backup", command=self.overwrite_with_backup).grid(row=0, column=8, padx=(4, 0))
+        ttk.Button(file_row, text="Batch apply...", command=self.batch_apply_template_dialog).grid(row=0, column=9, padx=(4, 0))
 
         template_row = ttk.Frame(file_frame)
         template_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -7340,7 +7532,7 @@ class SamplerAdvGui:
         spread_root_options = ttk.Frame(mapping_box)
         spread_root_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         spread_root_options.columnconfigure(3, weight=1)
-        self._choice_row(spread_root_options, 0, "Mode", "param_key_spread_mode", ["around root key", "spread evenly", "first note + interval"], "around root key", tooltip="around root key uses neighboring root midpoints. spread evenly fills a chosen key span evenly across the detected roots. first note + interval uses the current zone order and generates evenly spaced note centers from a chosen starting note.")
+        self._choice_row(spread_root_options, 0, "Mode", "param_key_spread_mode", ["around root key", "spread evenly", "first note + interval", "extend"], "around root key", tooltip="around root key uses neighboring root midpoints. spread evenly fills a chosen key span evenly across the detected roots. first note + interval uses the current zone order and generates evenly spaced note centers from a chosen starting note. extend only fills uncovered KeyRange gaps.")
         spread_evenly_row = ttk.Frame(spread_root_options)
         spread_evenly_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         spread_evenly_row.columnconfigure(1, weight=1)
@@ -7378,7 +7570,7 @@ class SamplerAdvGui:
         multiple_notes_options = ttk.Frame(mapping_box)
         multiple_notes_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         multiple_notes_options.columnconfigure(2, weight=1)
-        self._choice_row(multiple_notes_options, 0, "Mode", "param_multiple_notes_mode", ["layer", "spread velocity", "sort velocity", "detect velocity", "chain"], "layer", tooltip="layer stacks without changing VelocityRange. spread velocity uses current order. sort velocity first sorts by measured loudness, then applies the same gamma spread. detect velocity derives the velocity boundaries directly from measured note strength. chain spreads SelectorRange across zones sharing the same key and velocity area.")
+        self._choice_row(multiple_notes_options, 0, "Mode", "param_multiple_notes_mode", ["layer", "spread velocity", "sort velocity", "detect velocity", "chain", "extend velocity", "extend chain"], "layer", tooltip="layer stacks without changing VelocityRange. spread velocity uses current order. sort velocity first sorts by measured loudness, then applies the same gamma spread. detect velocity derives the velocity boundaries directly from measured note strength. chain spreads SelectorRange across zones sharing the same key and velocity area. extend modes only fill uncovered gaps.")
         gamma_row = ttk.Frame(multiple_notes_options)
         gamma_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         gamma_row.columnconfigure(1, weight=1)
@@ -8174,14 +8366,10 @@ class SamplerAdvGui:
             return
 
         try:
-            backup_dir = self.adv_path.parent / "_adv_backups"
+            backup_dir = app_backup_dir()
             backup_dir.mkdir(exist_ok=True)
 
-            backup_path = backup_dir / self.adv_path.name
-            counter = 1
-            while backup_path.exists():
-                backup_path = backup_dir / (self.adv_path.stem + "_" + str(counter) + self.adv_path.suffix)
-                counter += 1
+            backup_path = next_backup_path(self.adv_path)
 
             shutil.copy2(self.adv_path, backup_path)
             self.save_adv(self.adv_path)
@@ -8191,6 +8379,53 @@ class SamplerAdvGui:
 
         except Exception as e:
             self.show_error("Could not overwrite", e)
+
+    def batch_apply_template_dialog(self):
+        paths = filedialog.askopenfilenames(
+            title="Batch apply current settings",
+            filetypes=[("Ableton Device Preset", "*.adv"), ("All files", "*.*")]
+        )
+        if not paths:
+            return
+
+        try:
+            count = self.batch_apply_current_settings([Path(path) for path in paths])
+            messagebox.showinfo("Done", "Batch applied current settings to {} file(s).".format(count))
+        except Exception as e:
+            self.show_error("Could not batch apply", e)
+
+    def batch_apply_current_settings(self, paths):
+        global_values = self.collect_global_values()
+        global_update = self.collect_global_update_flags()
+        processing_flags = {k: v.get() for k, v in self.processing_update.items()}
+
+        backup_dir = app_backup_dir()
+        backup_dir.mkdir(exist_ok=True)
+
+        completed = 0
+        for path in paths:
+            path = Path(path)
+            if not path.exists():
+                raise FileNotFoundError("Batch ADV not found: {}".format(path))
+
+            model = SamplerAdvModel(AdvCodec.load(path), source_path=path)
+            self.log_insert("Batch apply: {}\n".format(path))
+            total_changes = SamplerProcessors.run_enabled_processors(
+                model,
+                None,
+                global_values,
+                processing_flags,
+                log_func=self.log_insert,
+            )
+            model.apply_global_values(global_values, global_update, log_func=self.log_insert)
+
+            backup_path = next_backup_path(path)
+            shutil.copy2(path, backup_path)
+            AdvCodec.write(model.tree, path)
+            completed += 1
+            self.log_insert("Batch apply: wrote {} change(s), backup {}\n".format(total_changes, backup_path))
+
+        return completed
 
     def delete_selected_zone(self):
         if self.model is None or self.current_zone_index is None:
