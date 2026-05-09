@@ -1088,8 +1088,8 @@ def loop_mode_label_from_value(prefix, value):
 def migrate_loop_write_flags(data, processing_update):
     source = data.get("processing_update", {}) if isinstance(data, dict) else {}
     for expand_key, write_keys in (
-        ("loop_detection", ("loop_write_start", "loop_write_end", "loop_write_mode", "loop_write_crossfade")),
-        ("release_loop_detection", ("release_loop_write_start", "release_loop_write_end", "release_loop_write_mode", "release_loop_write_crossfade")),
+        ("loop_detection", ("loop_write_start", "loop_write_end", "loop_write_mode", "loop_write_crossfade", "loop_write_search")),
+        ("release_loop_detection", ("release_loop_write_start", "release_loop_write_end", "release_loop_write_mode", "release_loop_write_crossfade", "release_loop_write_search")),
     ):
         if not source.get(expand_key, False):
             continue
@@ -4315,6 +4315,7 @@ class SamplerProcessors:
                     "{}_write_end".format(write_prefix),
                     "{}_write_mode".format(write_prefix),
                     "{}_write_crossfade".format(write_prefix),
+                    "{}_write_search".format(write_prefix),
                 )
                 has_write_flags = any(key in params for key in write_keys)
                 if not has_write_flags and not params.get(flag_key, False):
@@ -4323,11 +4324,14 @@ class SamplerProcessors:
                 write_end = bool(params.get("{}_write_end".format(write_prefix), True))
                 write_mode = bool(params.get("{}_write_mode".format(write_prefix), True))
                 write_crossfade = bool(params.get("{}_write_crossfade".format(write_prefix), True))
-                if not (write_start or write_end or write_mode or write_crossfade):
+                write_search = bool(params.get("{}_write_search".format(write_prefix), (not has_write_flags and params.get(flag_key, False))))
+                write_start_result = write_start or write_search
+                write_end_result = write_end or write_search
+                if not (write_start or write_end or write_mode or write_crossfade or write_search):
                     log("Loop detection: no {} loop fields are selected for writing.\n".format(loop_label))
                     continue
 
-                if write_mode and not (write_start or write_end or write_crossfade):
+                if write_mode and not (write_start or write_end or write_crossfade or write_search):
                     mode_label = str(params.get("param_{}_loop_mode".format(prefix), "loop")).strip()
                     mode_value = loop_mode_value_from_label(prefix, mode_label)
                     before_mode = loop_vals.get("mode", "")
@@ -4358,6 +4362,7 @@ class SamplerProcessors:
                 )
                 current_start_rel = current_loop_start - audio.zone_start
                 current_end_rel = current_loop_end - audio.zone_start
+                current_loop_is_default = current_end_rel <= current_start_rel + 1
                 release_loop_uses_absolute_start = False
 
                 if prefix == "release":
@@ -4398,6 +4403,8 @@ class SamplerProcessors:
                         basis_span,
                         pitch_hz=pitch_hz,
                     )
+                    if not write_search:
+                        search_range_samples = 0
                     target_offset = AudioAnalysis.parse_number_unit_samples(
                         start_number,
                         start_unit,
@@ -4407,13 +4414,12 @@ class SamplerProcessors:
                     )
                     target_start_sample = int(basis_start) + int(target_offset)
                     if not write_start:
-                        target_start_sample = current_start_rel
-                        search_range_samples = 0
+                        target_start_sample = int(basis_start) + int(target_offset) if current_loop_is_default else current_start_rel
                     if not write_crossfade:
                         crossfade_policy = "Custom"
                         crossfade_custom_number = str(parse_number_from_text(loop_vals.get("crossfade", "0"), 0))
                         crossfade_custom_unit = "samples"
-                    if write_end:
+                    if write_end or (write_search and current_loop_is_default):
                         loop_info = AudioAnalysis.find_release_loop_to_sample_end(
                             audio.samples,
                             audio.sample_rate,
@@ -4425,11 +4431,12 @@ class SamplerProcessors:
                             pitch_hz=pitch_hz,
                         )
                     else:
+                        target_end_sample = audio.zone_end - audio.zone_start if current_loop_is_default else current_end_rel
                         loop_info = AudioAnalysis.find_loop_points(
                             audio.samples,
                             audio.sample_rate,
                             target_start_sample=target_start_sample,
-                            target_end_sample=current_end_rel,
+                            target_end_sample=target_end_sample,
                             search_range_samples=search_range_samples,
                             fade_policy=crossfade_policy,
                             fade_custom_number=crossfade_custom_number,
@@ -4446,6 +4453,8 @@ class SamplerProcessors:
                         len(audio.samples),
                         pitch_hz=pitch_hz,
                     )
+                    if not write_search:
+                        search_range_samples = 0
                     target_start_sample = AudioAnalysis.parse_number_unit_samples(
                         start_number,
                         start_unit,
@@ -4454,7 +4463,13 @@ class SamplerProcessors:
                         pitch_hz=pitch_hz,
                     )
                     if not write_start:
-                        target_start_sample = current_start_rel
+                        target_start_sample = AudioAnalysis.parse_number_unit_samples(
+                            start_number,
+                            start_unit,
+                            audio.sample_rate,
+                            len(audio.samples),
+                            pitch_hz=pitch_hz,
+                        ) if current_loop_is_default else current_start_rel
                     target_end_sample = AudioAnalysis.parse_number_unit_samples(
                         end_number,
                         end_unit,
@@ -4463,9 +4478,13 @@ class SamplerProcessors:
                         pitch_hz=pitch_hz,
                     )
                     if not write_end:
-                        target_end_sample = current_end_rel
-                    if not write_start and not write_end:
-                        search_range_samples = 0
+                        target_end_sample = AudioAnalysis.parse_number_unit_samples(
+                            end_number,
+                            end_unit,
+                            audio.sample_rate,
+                            len(audio.samples),
+                            pitch_hz=pitch_hz,
+                        ) if current_loop_is_default else current_end_rel
                     if not write_crossfade:
                         crossfade_policy = "Custom"
                         crossfade_custom_number = str(parse_number_from_text(loop_vals.get("crossfade", "0"), 0))
@@ -4499,9 +4518,9 @@ class SamplerProcessors:
                     loop_vals.get("mode", ""),
                     loop_vals.get("crossfade", ""),
                 )
-                if write_start:
+                if write_start_result:
                     loop_vals["start"] = str(loop_start)
-                if write_end:
+                if write_end_result:
                     loop_vals["end"] = str(loop_end)
                 if write_mode:
                     loop_vals["mode"] = str(mode_value)
@@ -6010,12 +6029,14 @@ class SamplerProcessors:
             "loop_write_end",
             "loop_write_mode",
             "loop_write_crossfade",
+            "loop_write_search",
         )
         release_loop_write_keys = (
             "release_loop_write_start",
             "release_loop_write_end",
             "release_loop_write_mode",
             "release_loop_write_crossfade",
+            "release_loop_write_search",
         )
         loop_detection_enabled = (
             any(bool(processing_update.get(key, False)) for key in loop_write_keys)
@@ -7345,10 +7366,11 @@ class SamplerAdvGui:
             predicate=lambda value: bool(value) and str(sustain_crossfade_policy_var.get()).strip() == "Custom"
         )
         subrow += 1
-        self._number_unit_row(
+        self._checked_number_unit_row(
             loop_options,
             subrow,
             "Loop-point search range",
+            "loop_write_search",
             "param_sustain_loop_search_number",
             "param_sustain_loop_search_unit",
             "25",
@@ -7442,10 +7464,11 @@ class SamplerAdvGui:
             predicate=lambda value: bool(value) and str(release_crossfade_policy_var.get()).strip() == "Custom"
         )
         subrow += 1
-        self._number_unit_row(
+        self._checked_number_unit_row(
             release_loop_options,
             subrow,
             "Loop-point search range",
+            "release_loop_write_search",
             "param_release_loop_search_number",
             "param_release_loop_search_unit",
             "10",
@@ -8668,11 +8691,13 @@ class SamplerAdvGui:
             bool(var_value(self.processing_update, "loop_write_start", False))
             or bool(var_value(self.processing_update, "loop_write_end", False))
             or bool(var_value(self.processing_update, "loop_write_crossfade", False))
+            or bool(var_value(self.processing_update, "loop_write_search", False))
         )
         release_position_preview = (
             bool(var_value(self.processing_update, "release_loop_write_start", False))
             or bool(var_value(self.processing_update, "release_loop_write_end", False))
             or bool(var_value(self.processing_update, "release_loop_write_crossfade", False))
+            or bool(var_value(self.processing_update, "release_loop_write_search", False))
         )
         return {
             "split_detection": split_enabled and split_mode == "detection",
@@ -8874,6 +8899,7 @@ class SamplerAdvGui:
         write_start=True,
         write_end=True,
         write_crossfade=True,
+        write_search=True,
     ):
         start_number = self.global_vars.get("param_{}_loop_start_pct".format(prefix), tk.StringVar(value="25")).get()
         start_unit = self.global_vars.get("param_{}_loop_start_unit".format(prefix), tk.StringVar(value="%")).get()
@@ -8903,6 +8929,7 @@ class SamplerAdvGui:
             except Exception:
                 current_start = None
                 current_end = None
+        current_loop_is_default = current_start is not None and current_end is not None and current_end <= current_start + 1
         release_loop_uses_absolute_start = False
         if prefix == "release":
             release_loop_uses_absolute_start = True
@@ -8942,6 +8969,8 @@ class SamplerAdvGui:
                 pitch_hz=pitch_hz,
             )
             search_range_samples = min(int(search_range_samples), int(sample_rate * WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS))
+            if not write_search:
+                search_range_samples = 0
             target_offset = AudioAnalysis.parse_number_unit_samples(
                 start_number,
                 start_unit,
@@ -8951,13 +8980,12 @@ class SamplerAdvGui:
             )
             target_start_sample = int(basis_start) + int(target_offset)
             if not write_start and current_start is not None:
-                target_start_sample = current_start
-                search_range_samples = 0
+                target_start_sample = int(basis_start) + int(target_offset) if current_loop_is_default else current_start
             if not write_crossfade and existing_loop_info is not None:
                 crossfade_policy = "Custom"
                 crossfade_custom_number = str(parse_number_from_text(existing_loop_info.get("crossfade", "0"), 0))
                 crossfade_custom_unit = "samples"
-            if write_end or current_end is None:
+            if write_end or current_end is None or (write_search and current_loop_is_default):
                 loop_info = AudioAnalysis.find_release_loop_to_sample_end(
                     slice_samples,
                     sample_rate,
@@ -8969,11 +8997,12 @@ class SamplerAdvGui:
                     pitch_hz=pitch_hz,
                 )
             else:
+                target_end_sample = len(slice_samples) if current_loop_is_default else current_end
                 loop_info = AudioAnalysis.find_loop_points(
                     slice_samples,
                     sample_rate,
                     target_start_sample=target_start_sample,
-                    target_end_sample=current_end,
+                    target_end_sample=target_end_sample,
                     search_range_samples=search_range_samples,
                     fade_policy=crossfade_policy,
                     fade_custom_number=crossfade_custom_number,
@@ -8991,6 +9020,8 @@ class SamplerAdvGui:
                 pitch_hz=pitch_hz,
             )
             search_range_samples = min(int(search_range_samples), int(sample_rate * WAVEFORM_PREVIEW_LOOP_SEARCH_CAP_SECONDS))
+            if not write_search:
+                search_range_samples = 0
             target_start_sample = AudioAnalysis.parse_number_unit_samples(
                 start_number,
                 start_unit,
@@ -8999,7 +9030,7 @@ class SamplerAdvGui:
                 pitch_hz=pitch_hz,
             )
             if not write_start and current_start is not None:
-                target_start_sample = current_start
+                target_start_sample = target_start_sample if current_loop_is_default else current_start
             target_end_sample = AudioAnalysis.parse_number_unit_samples(
                 end_number,
                 end_unit,
@@ -9008,9 +9039,7 @@ class SamplerAdvGui:
                 pitch_hz=pitch_hz,
             )
             if not write_end and current_end is not None:
-                target_end_sample = current_end
-            if not write_start and not write_end and current_start is not None and current_end is not None:
-                search_range_samples = 0
+                target_end_sample = target_end_sample if current_loop_is_default else current_end
             if not write_crossfade and existing_loop_info is not None:
                 crossfade_policy = "Custom"
                 crossfade_custom_number = str(parse_number_from_text(existing_loop_info.get("crossfade", "0"), 0))
@@ -9032,9 +9061,9 @@ class SamplerAdvGui:
         loop_offset = int(release_region_start) if prefix == "release" and release_region_start is not None and not release_loop_uses_absolute_start else 0
         loop_start = int(loop_offset + loop_info["start"])
         loop_end = int(loop_offset + loop_info["end"])
-        if not write_start and current_start is not None:
+        if not (write_start or write_search) and current_start is not None:
             loop_start = int(current_start)
-        if not write_end and current_end is not None:
+        if not (write_end or write_search) and current_end is not None:
             loop_end = int(current_end)
         loop_start = max(0, min(loop_start, max(0, len(slice_samples) - 1)))
         loop_end = max(loop_start + 1, min(loop_end, len(slice_samples)))
@@ -9542,9 +9571,11 @@ class SamplerAdvGui:
         sustain_write_start = bool(self.processing_update.get("loop_write_start", tk.BooleanVar(value=True)).get())
         sustain_write_end = bool(self.processing_update.get("loop_write_end", tk.BooleanVar(value=True)).get())
         sustain_write_crossfade = bool(self.processing_update.get("loop_write_crossfade", tk.BooleanVar(value=True)).get())
+        sustain_write_search = bool(self.processing_update.get("loop_write_search", tk.BooleanVar(value=True)).get())
         release_write_start = bool(self.processing_update.get("release_loop_write_start", tk.BooleanVar(value=True)).get())
         release_write_end = bool(self.processing_update.get("release_loop_write_end", tk.BooleanVar(value=True)).get())
         release_write_crossfade = bool(self.processing_update.get("release_loop_write_crossfade", tk.BooleanVar(value=True)).get())
+        release_write_search = bool(self.processing_update.get("release_loop_write_search", tk.BooleanVar(value=True)).get())
         use_predicted_slice_loops = (
             overlay_flags["split_detection"]
             or overlay_flags["split_gate"]
@@ -9583,6 +9614,7 @@ class SamplerAdvGui:
                             bool(sustain_write_start),
                             bool(sustain_write_end),
                             bool(sustain_write_crossfade),
+                            bool(sustain_write_search),
                             existing_loop_key,
                         ),
                         lambda slice_samples=slice_samples, existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
@@ -9593,6 +9625,7 @@ class SamplerAdvGui:
                             write_start=sustain_write_start,
                             write_end=sustain_write_end,
                             write_crossfade=sustain_write_crossfade,
+                            write_search=sustain_write_search,
                         ),
                     )
                     if loop_info is not None:
@@ -9624,6 +9657,7 @@ class SamplerAdvGui:
                             bool(sustain_write_start),
                             bool(sustain_write_end),
                             bool(sustain_write_crossfade),
+                            bool(sustain_write_search),
                             existing_loop_key,
                         ),
                         lambda existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
@@ -9634,6 +9668,7 @@ class SamplerAdvGui:
                             write_start=sustain_write_start,
                             write_end=sustain_write_end,
                             write_crossfade=sustain_write_crossfade,
+                            write_search=sustain_write_search,
                         ),
                     )
                     if loop_info is not None:
@@ -9676,6 +9711,7 @@ class SamplerAdvGui:
                             bool(release_write_start),
                             bool(release_write_end),
                             bool(release_write_crossfade),
+                            bool(release_write_search),
                             existing_loop_key,
                         ),
                         lambda slice_samples=slice_samples, sustain_loop_info=sustain_loop_info, existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
@@ -9687,6 +9723,7 @@ class SamplerAdvGui:
                             write_start=release_write_start,
                             write_end=release_write_end,
                             write_crossfade=release_write_crossfade,
+                            write_search=release_write_search,
                         ),
                     )
                     if loop_info is not None:
@@ -9723,6 +9760,7 @@ class SamplerAdvGui:
                             bool(release_write_start),
                             bool(release_write_end),
                             bool(release_write_crossfade),
+                            bool(release_write_search),
                             existing_loop_key,
                         ),
                         lambda sustain_loop_info=sustain_loop_info, existing_loop_info=existing_loop_info: self.predict_loop_preview_for_slice(
@@ -9734,6 +9772,7 @@ class SamplerAdvGui:
                             write_start=release_write_start,
                             write_end=release_write_end,
                             write_crossfade=release_write_crossfade,
+                            write_search=release_write_search,
                         ),
                     )
                     if loop_info is not None:

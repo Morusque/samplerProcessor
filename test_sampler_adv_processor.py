@@ -1957,6 +1957,44 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(sustain["mode"], "1")
         self.assertEqual(sustain["crossfade"], "123")
 
+    def test_detect_zone_loops_search_checked_optimizes_from_existing_anchors(self):
+        sr = 48000
+        t = MODULE.np.arange(sr * 2, dtype=MODULE.np.float64) / sr
+        samples = (0.4 * MODULE.np.sin(2.0 * MODULE.np.pi * 220.0 * t)).astype(MODULE.np.float32)
+        model = FakeLoopModel(samples)
+        zone = model.get_zone(0)
+        sustain_loop = MODULE.child(zone, "SustainLoop")
+        MODULE.set_value(sustain_loop, "Start", 12345)
+        MODULE.set_value(sustain_loop, "End", 35555)
+        MODULE.set_value(sustain_loop, "Mode", "1")
+        MODULE.set_value(sustain_loop, "Crossfade", "123")
+        audio_cache = FakeLoopAudioCache(model)
+
+        count = MODULE.SamplerProcessors.detect_zone_loops(
+            model,
+            {
+                "loop_detection": True,
+                "loop_write_start": False,
+                "loop_write_end": False,
+                "loop_write_mode": False,
+                "loop_write_crossfade": False,
+                "loop_write_search": True,
+                "param_sustain_loop_start_pct": "99",
+                "param_sustain_loop_end_pct": "100",
+                "param_sustain_loop_search_number": "50",
+                "param_sustain_loop_search_unit": "%",
+                "param_sustain_crossfade_policy": "Longest possible",
+                "param_sustain_loop_mode": "back-and-forth",
+            },
+            audio_cache,
+        )
+
+        self.assertEqual(count, 1)
+        sustain = model.read_loop(zone, "SustainLoop")
+        self.assertNotEqual((sustain["start"], sustain["end"]), ("12345", "35555"))
+        self.assertEqual(sustain["mode"], "1")
+        self.assertEqual(sustain["crossfade"], "123")
+
     def test_detect_zone_loops_keeps_locked_anchors_when_only_crossfade_is_checked(self):
         sr = 48000
         t = MODULE.np.arange(sr * 2, dtype=MODULE.np.float64) / sr
