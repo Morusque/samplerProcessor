@@ -79,6 +79,9 @@ class FakeRangeModel:
     def write_range(self, zone, tag, vals):
         zone[tag] = dict(vals)
 
+    def refresh(self):
+        pass
+
     def validate_range(self, vals, lo, hi):
         mn = MODULE.clamp_int(vals["min"], lo, hi)
         mx = MODULE.clamp_int(vals["max"], lo, hi)
@@ -128,6 +131,9 @@ class FakeSortableModel:
 
     def extract_sample_path(self, zone):
         return zone.get("_sample_path", ""), zone.get("_relative_path", "")
+
+    def refresh(self):
+        pass
 
 
 class FakeMidiModel:
@@ -624,6 +630,18 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual((ranges[1]["min"], ranges[1]["max"]), ("48", "71"))
         self.assertEqual((ranges[2]["min"], ranges[2]["max"]), ("72", "95"))
 
+    def test_full_key_ranges_write_same_span_to_every_zone(self):
+        model = self.load_model("test02.adv")
+
+        count = MODULE.SamplerProcessors.spread_key_zones(
+            model,
+            {"param_key_spread_mode": "full", "param_key_range_min": "12", "param_key_range_max": "96"},
+        )
+
+        self.assertEqual(count, 3)
+        ranges = [model.read_range(model.get_zone(i), "KeyRange") for i in range(model.zone_count())]
+        self.assertTrue(all((vals["min"], vals["max"], vals["xfade_min"], vals["xfade_max"]) == ("12", "96", "12", "96") for vals in ranges))
+
     def test_spread_one_note_per_key_updates_expected_ranges(self):
         model = self.load_model("test02.adv")
 
@@ -742,6 +760,44 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(count, 1)
         vel = model.read_range(zone, "VelocityRange")
         self.assertEqual((vel["min"], vel["max"]), ("1", "127"))
+
+    def test_full_velocity_and_chain_ranges_write_same_span_to_every_zone(self):
+        model = FakeRangeModel([
+            (
+                {"min": "60", "max": "60", "xfade_min": "60", "xfade_max": "60"},
+                {"min": "10", "max": "20", "xfade_min": "10", "xfade_max": "20"},
+                {"min": "0", "max": "10", "xfade_min": "0", "xfade_max": "10"},
+            ),
+            (
+                {"min": "62", "max": "62", "xfade_min": "62", "xfade_max": "62"},
+                {"min": "30", "max": "40", "xfade_min": "30", "xfade_max": "40"},
+                {"min": "20", "max": "30", "xfade_min": "20", "xfade_max": "30"},
+            ),
+        ])
+
+        count = MODULE.SamplerProcessors.run_enabled_processors(
+            model,
+            None,
+            {
+                "param_velocity_range_method": "full",
+                "param_velocity_range_min": "7",
+                "param_velocity_range_max": "120",
+                "param_chain_range_method": "full",
+                "param_chain_range_min": "2",
+                "param_chain_range_max": "99",
+            },
+            {"velocity_range_mapping": True, "chain_range_mapping": True},
+        )
+
+        self.assertEqual(count, 4)
+        self.assertEqual([model.read_range(model.get_zone(i), "VelocityRange") for i in range(model.zone_count())], [
+            {"min": "7", "max": "120", "xfade_min": "7", "xfade_max": "120"},
+            {"min": "7", "max": "120", "xfade_min": "7", "xfade_max": "120"},
+        ])
+        self.assertEqual([model.read_range(model.get_zone(i), "SelectorRange") for i in range(model.zone_count())], [
+            {"min": "2", "max": "99", "xfade_min": "2", "xfade_max": "99"},
+            {"min": "2", "max": "99", "xfade_min": "2", "xfade_max": "99"},
+        ])
 
     def test_split_boundaries_from_onsets_can_skip_first_lead_in_zone(self):
         onsets = [1000, 3000, 5000]
@@ -1014,6 +1070,157 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(model.read_range(zone, "VelocityRange")["min"], "127")
         self.assertEqual(model.read_range(zone, "SelectorRange")["min"], "127")
 
+    def test_run_enabled_processors_routes_filename_mapping_per_field(self):
+        model = FakeSortableModel([
+            {
+                "name": "sample P064 V110 C004 D-12",
+                "root_key": 60,
+                "key_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+                "velocity_range": {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"},
+                "selector_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+            }
+        ])
+        zone = model.get_zone(0)
+        zone["Detune"] = "0"
+
+        MODULE.SamplerProcessors.run_enabled_processors(
+            model,
+            None,
+            {
+                "param_root_key_method": "from filename",
+                "param_detune_method": "from filename",
+                "param_velocity_range_method": "from filename",
+                "param_chain_range_method": "spread",
+            },
+            {
+                "pitch_detection_root": True,
+                "pitch_detection_detune": True,
+                "velocity_range_mapping": True,
+                "chain_range_mapping": False,
+            },
+        )
+
+        self.assertEqual(zone["RootKey"], "64")
+        self.assertEqual(zone["Detune"], "-12")
+        self.assertEqual(model.read_range(zone, "VelocityRange"), {"min": "110", "max": "110", "xfade_min": "110", "xfade_max": "110"})
+        self.assertEqual(model.read_range(zone, "SelectorRange"), {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"})
+
+    def test_filename_mapping_accepts_custom_prefixes(self):
+        model = FakeSortableModel([
+            {
+                "name": "sample key064 vel110 chain04 fine-12",
+                "root_key": 60,
+                "key_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+                "velocity_range": {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"},
+                "selector_range": {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+            }
+        ])
+        zone = model.get_zone(0)
+        zone["Detune"] = "0"
+
+        count = MODULE.SamplerProcessors.apply_filename_mapping(
+            model,
+            {
+                "param_filename_root_key_prefix": "key",
+                "param_filename_velocity_prefix": "vel",
+                "param_filename_chain_prefix": "chain",
+                "param_filename_detune_prefix": "fine",
+            },
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(zone["RootKey"], "64")
+        self.assertEqual(zone["Detune"], "-12")
+        self.assertEqual(model.read_range(zone, "VelocityRange")["min"], "110")
+        self.assertEqual(model.read_range(zone, "SelectorRange")["min"], "4")
+
+    def test_run_enabled_processors_sets_fixed_detune(self):
+        model = FakeSortableModel([
+            {"name": "zone-a", "root_key": 60},
+            {"name": "zone-b", "root_key": 62},
+        ])
+        for i in range(model.zone_count()):
+            model.get_zone(i)["Detune"] = "0"
+
+        count = MODULE.SamplerProcessors.run_enabled_processors(
+            model,
+            None,
+            {"param_detune_method": "fixed value", "param_fixed_detune": "-18"},
+            {"pitch_detection_detune": True},
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual([model.get_zone(i)["Detune"] for i in range(model.zone_count())], ["-18", "-18"])
+
+    def test_generate_root_keys_interval_writes_rootkey_not_keyrange(self):
+        model = FakeRangeModel([
+            (
+                {"min": "10", "max": "20", "xfade_min": "10", "xfade_max": "20"},
+                {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"},
+                {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+            ),
+            (
+                {"min": "30", "max": "40", "xfade_min": "30", "xfade_max": "40"},
+                {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"},
+                {"min": "0", "max": "127", "xfade_min": "0", "xfade_max": "127"},
+            ),
+        ])
+        before_ranges = [model.read_range(model.get_zone(i), "KeyRange") for i in range(model.zone_count())]
+
+        count = MODULE.SamplerProcessors.run_enabled_processors(
+            model,
+            None,
+            {"param_root_key_method": "generate interval", "param_key_spread_first_note": "48", "param_key_spread_interval": "7", "param_key_spread_repeat_count": "1"},
+            {"pitch_detection_root": True},
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual([model.get_zone(i)["RootKey"] for i in range(model.zone_count())], ["48", "55"])
+        self.assertEqual([model.read_range(model.get_zone(i), "KeyRange") for i in range(model.zone_count())], before_ranges)
+
+    def test_migrate_mapping_method_flags_maps_legacy_template_keys(self):
+        global_vars = {
+            "param_root_key_method": FakeVar("detect pitch"),
+            "param_detune_method": FakeVar("detect pitch"),
+            "param_key_range_method": FakeVar("around RootKey"),
+            "param_velocity_range_method": FakeVar("spread"),
+            "param_chain_range_method": FakeVar("spread"),
+        }
+        processing_update = {
+            "pitch_detection_root": FakeVar(False),
+            "pitch_detection_detune": FakeVar(False),
+            "key_range_mapping": FakeVar(False),
+            "velocity_range_mapping": FakeVar(False),
+            "chain_range_mapping": FakeVar(False),
+        }
+
+        MODULE.migrate_mapping_method_flags(
+            {
+                "global_values": {
+                    "param_key_spread_mode": "first note + interval",
+                    "param_multiple_notes_mode": "sort velocity",
+                },
+                "processing_update": {
+                    "filename_mapping": True,
+                    "spread_root": True,
+                    "multiple_notes_case": True,
+                },
+            },
+            global_vars,
+            processing_update,
+        )
+
+        self.assertTrue(processing_update["pitch_detection_root"].get())
+        self.assertTrue(processing_update["pitch_detection_detune"].get())
+        self.assertTrue(processing_update["key_range_mapping"].get())
+        self.assertTrue(processing_update["velocity_range_mapping"].get())
+        self.assertTrue(processing_update["chain_range_mapping"].get())
+        self.assertEqual(global_vars["param_root_key_method"].get(), "generate interval")
+        self.assertEqual(global_vars["param_detune_method"].get(), "from filename")
+        self.assertEqual(global_vars["param_key_range_method"].get(), "around RootKey")
+        self.assertEqual(global_vars["param_velocity_range_method"].get(), "sort by loudness")
+        self.assertEqual(global_vars["param_chain_range_method"].get(), "from filename")
+
     def test_run_enabled_processors_spreads_key_before_velocity(self):
         model = self.load_model("test02.adv")
 
@@ -1198,6 +1405,69 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         self.assertEqual(float(captured["samples"][0]), 250.0)
         self.assertEqual(float(captured["samples"][-1]), 749.0)
         self.assertEqual(MODULE.get_value(zone, "RootKey", ""), "69")
+
+    def test_detect_zone_pitch_detune_only_accepts_octave_equivalent_pitch(self):
+        zone = MODULE.ET.Element("MultiSamplePart")
+        for tag, value in (
+            ("Name", "octave-detune"),
+            ("RootKey", "60"),
+            ("Detune", "0"),
+            ("SampleStart", "0"),
+            ("SampleEnd", "1000"),
+        ):
+            MODULE.ET.SubElement(zone, tag).set("Value", str(value))
+        audio = SimpleNamespace(samples=MODULE.np.ones(1000, dtype=MODULE.np.float32), sample_rate=1000)
+
+        class PitchModel:
+            def zone_count(self_nonlocal):
+                return 1
+
+            def get_zone(self_nonlocal, index):
+                if index != 0:
+                    raise IndexError(index)
+                return zone
+
+        class PitchAudioCache:
+            def get_zone_audio(self_nonlocal, _model, _zone):
+                return audio
+
+        original = MODULE.AudioAnalysis.detect_pitch_hz
+        MODULE.AudioAnalysis.detect_pitch_hz = lambda *_args, **_kwargs: MODULE.AudioAnalysis.midi_key_to_frequency(72, diapason_hz=440.0)
+        try:
+            count = MODULE.SamplerProcessors.detect_zone_pitch(
+                PitchModel(),
+                {
+                    "pitch_detection_root": False,
+                    "pitch_detection_detune": True,
+                    "param_diapason_hz": "440",
+                },
+                PitchAudioCache(),
+            )
+        finally:
+            MODULE.AudioAnalysis.detect_pitch_hz = original
+
+        self.assertEqual(count, 0)
+        self.assertEqual(MODULE.get_value(zone, "RootKey", ""), "60")
+        self.assertEqual(MODULE.get_value(zone, "Detune", ""), "0")
+
+        shifted_hz = MODULE.AudioAnalysis.midi_key_to_frequency(72, diapason_hz=440.0) * (2.0 ** (17.0 / 1200.0))
+        MODULE.AudioAnalysis.detect_pitch_hz = lambda *_args, **_kwargs: shifted_hz
+        try:
+            count = MODULE.SamplerProcessors.detect_zone_pitch(
+                PitchModel(),
+                {
+                    "pitch_detection_root": False,
+                    "pitch_detection_detune": True,
+                    "param_diapason_hz": "440",
+                },
+                PitchAudioCache(),
+            )
+        finally:
+            MODULE.AudioAnalysis.detect_pitch_hz = original
+
+        self.assertEqual(count, 1)
+        self.assertEqual(MODULE.get_value(zone, "RootKey", ""), "60")
+        self.assertEqual(MODULE.get_value(zone, "Detune", ""), "17")
 
     def test_detect_pitch_hz_corrects_subharmonic_on_flute_zone(self):
         adv_path = Path(__file__).with_name("testPresets01 Project") / "adv presets" / "acoustic wood recorder flute 01.adv"

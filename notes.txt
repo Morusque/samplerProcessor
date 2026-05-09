@@ -1,11 +1,11 @@
 
 done, to be tested :
-- loop-point search range now has its own checkbox; when checked with Start/Stop unchecked it optimizes from existing ADV anchors, or default anchors for newly created audio-file zones
 
 sorted mostly from probably quickest to more complex :
 
 test or define first :
-- maybe don't mix concept of root note spreading and key zones in the "spread notes" section
 - more tests on approved files (including refined files) mainly for the tuning part
 - investigate threading (this should not be mixed with other tasks)
 - discuss file ops
+- edge case to handle the best possible way : detect detune but not root note
+- loop start logic : start late and try to move it earlier until best position

@@ -1136,6 +1136,66 @@ def migrate_envelope_write_flags(data, global_update):
                 global_update[key].set(True)
 
 
+def migrate_mapping_method_flags(data, global_vars, processing_update):
+    if not isinstance(data, dict):
+        return
+    source_values = data.get("global_values", {})
+    source_processing = data.get("processing_update", {})
+    if not isinstance(source_values, dict) or not isinstance(source_processing, dict):
+        return
+
+    if source_processing.get("filename_mapping", False):
+        for key in ("pitch_detection_root", "pitch_detection_detune", "velocity_range_mapping", "chain_range_mapping"):
+            if key in processing_update:
+                processing_update[key].set(True)
+        for key, value in (
+            ("param_root_key_method", "from filename"),
+            ("param_detune_method", "from filename"),
+            ("param_velocity_range_method", "from filename"),
+            ("param_chain_range_method", "from filename"),
+        ):
+            if key in global_vars:
+                global_vars[key].set(value)
+
+    if source_processing.get("spread_root", False):
+        legacy_mode = str(source_values.get("param_key_spread_mode", "around root key")).strip().lower()
+        if legacy_mode == "first note + interval":
+            if "pitch_detection_root" in processing_update:
+                processing_update["pitch_detection_root"].set(True)
+            if "param_root_key_method" in global_vars:
+                global_vars["param_root_key_method"].set("generate interval")
+            if "key_range_mapping" in processing_update:
+                processing_update["key_range_mapping"].set(True)
+            if "param_key_range_method" in global_vars:
+                global_vars["param_key_range_method"].set("around RootKey")
+        else:
+            mapped = {"around root key": "around RootKey", "spread evenly": "even", "extend": "extend"}.get(legacy_mode, "around RootKey")
+            if "key_range_mapping" in processing_update:
+                processing_update["key_range_mapping"].set(True)
+            if "param_key_range_method" in global_vars:
+                global_vars["param_key_range_method"].set(mapped)
+
+    if source_processing.get("multiple_notes_case", False):
+        legacy_mode = str(source_values.get("param_multiple_notes_mode", "layer")).strip().lower()
+        velocity_mode = {
+            "spread velocity": "spread",
+            "sort velocity": "sort by loudness",
+            "detect velocity": "detect loudness",
+            "extend velocity": "extend",
+        }.get(legacy_mode)
+        chain_mode = {"chain": "spread", "extend chain": "extend"}.get(legacy_mode)
+        if velocity_mode:
+            if "velocity_range_mapping" in processing_update:
+                processing_update["velocity_range_mapping"].set(True)
+            if "param_velocity_range_method" in global_vars:
+                global_vars["param_velocity_range_method"].set(velocity_mode)
+        if chain_mode:
+            if "chain_range_mapping" in processing_update:
+                processing_update["chain_range_mapping"].set(True)
+            if "param_chain_range_method" in global_vars:
+                global_vars["param_chain_range_method"].set(chain_mode)
+
+
 def list_value_parameter_paths(root, base_path):
     holder = find_node_by_path(root, base_path)
     if holder is None:
@@ -4257,11 +4317,13 @@ class SamplerProcessors:
                     detune_cents = detected_cents
                 else:
                     current_root = clamp_int(parse_number_from_text(get_value(zone, "RootKey", "60"), 60), 0, 127)
-                    _midi_existing, _ignored_root, detune_cents = AudioAnalysis.frequency_to_midi_parts(freq_hz, diapason_hz=diapason_hz)
-                    detune_cents = (_midi_existing - current_root) * 100.0
+                    midi_existing, _ignored_root, _ignored_cents = AudioAnalysis.frequency_to_midi_parts(freq_hz, diapason_hz=diapason_hz)
+                    semitone_delta = midi_existing - current_root
+                    octave_delta = int(round(semitone_delta / 12.0))
+                    detune_cents = (semitone_delta - (octave_delta * 12.0)) * 100.0
                     if detune_cents < -50.0 or detune_cents > 50.0:
                         log(
-                            "Pitch detection: skipped detune for {} because detected pitch is too far from current RootKey {}.\n".format(
+                            "Pitch detection: skipped detune for {} because detected pitch class is too far from current RootKey {}.\n".format(
                                 SamplerProcessors.zone_label(zone, i),
                                 current_root,
                             )
@@ -4897,15 +4959,53 @@ class SamplerProcessors:
         return updated
 
     @staticmethod
+    def set_full_range(model, tag, lo=0, hi=127, min_value=None, max_value=None, log_func=None):
+        def log(text):
+            if log_func:
+                log_func(text)
+
+        mn = clamp_int(parse_number_from_text(lo if min_value is None else min_value, lo), lo, hi)
+        mx = clamp_int(parse_number_from_text(hi if max_value is None else max_value, hi), lo, hi)
+        if mn > mx:
+            mn, mx = mx, mn
+        vals = {
+            "min": str(mn),
+            "max": str(mx),
+            "xfade_min": str(mn),
+            "xfade_max": str(mx),
+        }
+        updated = 0
+        for i in range(model.zone_count()):
+            zone = model.get_zone(i)
+            if model.read_range(zone, tag) == vals:
+                continue
+            model.write_range(zone, tag, vals)
+            updated += 1
+            log("Full {}: zone {} -> {}-{}\n".format(tag, i, mn, mx))
+        if updated == 0:
+            log("Full {}: no zone changed.\n".format(tag))
+        return updated
+
+    @staticmethod
     def spread_key_zones(model, params, log_func=None):
         mode = str(params.get("param_key_spread_mode", "around root key")).strip().lower()
-        if mode == "around root key":
+        if mode == "full":
+            return SamplerProcessors.set_full_range(
+                model,
+                "KeyRange",
+                0,
+                127,
+                min_value=params.get("param_key_range_min", params.get("param_key_spread_min", "0")),
+                max_value=params.get("param_key_range_max", params.get("param_key_spread_max", "127")),
+                log_func=log_func,
+            )
+        if mode in ("around root key", "around rootkey", "around root"):
             return SamplerProcessors.spread_around_root(model, log_func=log_func)
-        if mode == "spread evenly":
+        if mode in ("spread evenly", "even"):
             return SamplerProcessors.spread_evenly(
                 model,
-                key_min=parse_number_from_text(params.get("param_key_spread_min", "0"), 0),
-                key_max=parse_number_from_text(params.get("param_key_spread_max", "127"), 127),
+                key_min=parse_number_from_text(params.get("param_key_range_min", params.get("param_key_spread_min", "0")), 0),
+                key_max=parse_number_from_text(params.get("param_key_range_max", params.get("param_key_spread_max", "127")), 127),
                 log_func=log_func,
             )
         if mode == "one note per key":
@@ -4938,17 +5038,49 @@ class SamplerProcessors:
         return 0
 
     @staticmethod
-    def parse_filename_mapping_tokens(text):
+    def parse_filename_mapping_tokens(text, prefixes=None):
+        if prefixes is None:
+            prefixes = {"P": "P", "V": "V", "C": "C", "D": "D"}
+        prefix_items = []
+        for token_key, prefix in prefixes.items():
+            prefix = str(prefix or "").strip()
+            if prefix:
+                prefix_items.append((str(token_key), prefix))
+        prefix_items.sort(key=lambda item: len(item[1]), reverse=True)
+        if not prefix_items:
+            return {}
+        pattern = re.compile(
+            r"(?i)(?:^|[^A-Za-z0-9])({})\s*[:=_]?\s*([+-]?\d+)".format(
+                "|".join(re.escape(prefix) for _token_key, prefix in prefix_items)
+            )
+        )
+        prefix_lookup = {prefix.lower(): token_key for token_key, prefix in prefix_items}
         tokens = {}
-        for prefix, raw_value in FILENAME_MAPPING_PATTERN.findall(str(text or "")):
-            tokens[prefix.upper()] = int(raw_value)
+        for prefix, raw_value in pattern.findall(str(text or "")):
+            token_key = prefix_lookup.get(str(prefix).lower(), str(prefix).upper())
+            tokens[token_key] = int(raw_value)
         return tokens
 
     @staticmethod
-    def apply_filename_mapping(model, log_func=None):
+    def apply_filename_mapping(model, params=None, log_func=None):
         def log(text):
             if log_func:
                 log_func(text)
+
+        params = params or {}
+        write_root = bool(params.get("filename_write_root_key", True))
+        write_velocity = bool(params.get("filename_write_velocity", True))
+        write_chain = bool(params.get("filename_write_chain", True))
+        write_detune = bool(params.get("filename_write_detune", True))
+        prefixes = {
+            "P": params.get("param_filename_root_key_prefix", "P"),
+            "V": params.get("param_filename_velocity_prefix", "V"),
+            "C": params.get("param_filename_chain_prefix", "C"),
+            "D": params.get("param_filename_detune_prefix", "D"),
+        }
+        if not (write_root or write_velocity or write_chain or write_detune):
+            log("Filename mapping: no fields selected for writing.\n")
+            return 0
 
         updated = 0
         for i in range(model.zone_count()):
@@ -4956,12 +5088,12 @@ class SamplerProcessors:
             sample_path, relative_path = model.extract_sample_path(zone)
             zone_name = zone.get("Name", "zone") if isinstance(zone, dict) else get_value(zone, "Name", "zone")
             candidate = Path(str(sample_path or relative_path or zone_name)).stem
-            tokens = SamplerProcessors.parse_filename_mapping_tokens(candidate)
+            tokens = SamplerProcessors.parse_filename_mapping_tokens(candidate, prefixes=prefixes)
             if not tokens:
                 continue
 
             zone_changed = False
-            if "P" in tokens:
+            if write_root and "P" in tokens:
                 root_key = clamp_int(tokens["P"], 0, 127)
                 current_root = zone.get("RootKey", "") if isinstance(zone, dict) else get_value(zone, "RootKey", "")
                 if current_root != str(root_key):
@@ -4970,7 +5102,7 @@ class SamplerProcessors:
                     else:
                         set_value(zone, "RootKey", root_key)
                     zone_changed = True
-            if "D" in tokens:
+            if write_detune and "D" in tokens:
                 detune = clamp_int(tokens["D"], -50, 50)
                 current_detune = zone.get("Detune", "") if isinstance(zone, dict) else get_value(zone, "Detune", "")
                 if current_detune != str(detune):
@@ -4979,14 +5111,14 @@ class SamplerProcessors:
                     else:
                         set_value(zone, "Detune", detune)
                     zone_changed = True
-            if "V" in tokens:
+            if write_velocity and "V" in tokens:
                 vel = clamp_int(tokens["V"], 1, 127)
                 current = model.read_range(zone, "VelocityRange")
                 target = {"min": str(vel), "max": str(vel), "xfade_min": str(vel), "xfade_max": str(vel)}
                 if current != target:
                     model.write_range(zone, "VelocityRange", target)
                     zone_changed = True
-            if "C" in tokens:
+            if write_chain and "C" in tokens:
                 chain = clamp_int(tokens["C"], 0, 127)
                 current = model.read_range(zone, "SelectorRange")
                 target = {"min": str(chain), "max": str(chain), "xfade_min": str(chain), "xfade_max": str(chain)}
@@ -5000,6 +5132,62 @@ class SamplerProcessors:
 
         if updated == 0:
             log("Filename mapping: no zone changed.\n")
+        return updated
+
+    @staticmethod
+    def set_zone_detune_fixed(model, value, log_func=None):
+        def log(text):
+            if log_func:
+                log_func(text)
+
+        detune = clamp_int(parse_number_from_text(value, 0), -50, 50)
+        updated = 0
+        for i in range(model.zone_count()):
+            zone = model.get_zone(i)
+            current = zone.get("Detune", "") if isinstance(zone, dict) else get_value(zone, "Detune", "")
+            if current == str(detune):
+                continue
+            if isinstance(zone, dict):
+                zone["Detune"] = str(detune)
+            else:
+                set_value(zone, "Detune", detune)
+            updated += 1
+            log("Fixed detune: zone {} -> {}\n".format(i, detune))
+        if updated == 0:
+            log("Fixed detune: no Detune changed.\n")
+        return updated
+
+    @staticmethod
+    def generate_root_keys_interval(model, first_note=0, interval=1, repeat_count=1, log_func=None):
+        def log(text):
+            if log_func:
+                log_func(text)
+
+        zone_count = model.zone_count()
+        if zone_count <= 0:
+            log("RootKey interval generation: no zones found.\n")
+            return 0
+
+        first_note = clamp_int(parse_number_from_text(first_note, 0), 0, 127)
+        interval = max(1, int(round(parse_number_from_text(interval, 1))))
+        repeat_count = max(1, int(round(parse_number_from_text(repeat_count, 1))))
+        updated = 0
+        for idx in range(zone_count):
+            group_index = idx // repeat_count
+            root = clamp_int(first_note + (group_index * interval), 0, 127)
+            zone = model.get_zone(idx)
+            current = zone.get("RootKey", "") if isinstance(zone, dict) else get_value(zone, "RootKey", "")
+            if current == str(root):
+                continue
+            if isinstance(zone, dict):
+                zone["RootKey"] = str(root)
+            else:
+                set_value(zone, "RootKey", root)
+            updated += 1
+            log("RootKey interval generation: zone {} -> {}\n".format(idx, root))
+
+        if updated == 0:
+            log("RootKey interval generation: no RootKey changed.\n")
         return updated
 
     @staticmethod
@@ -5892,10 +6080,17 @@ class SamplerProcessors:
             else:
                 log("Unknown split mode; skipped.\n")
 
-        if processing_update.get("pitch_detection_root", False) or processing_update.get("pitch_detection_detune", False):
+        root_method = str(global_values.get("param_root_key_method", "detect pitch")).strip().lower()
+        detune_method = str(global_values.get("param_detune_method", "detect pitch")).strip().lower()
+        write_root = bool(processing_update.get("pitch_detection_root", False))
+        write_detune = bool(processing_update.get("pitch_detection_detune", False))
+
+        detect_root = write_root and root_method == "detect pitch"
+        detect_detune = write_detune and detune_method == "detect pitch"
+        if detect_root or detect_detune:
             pitch_flags = dict(global_values)
-            pitch_flags["pitch_detection_root"] = processing_update.get("pitch_detection_root", False)
-            pitch_flags["pitch_detection_detune"] = processing_update.get("pitch_detection_detune", False)
+            pitch_flags["pitch_detection_root"] = detect_root
+            pitch_flags["pitch_detection_detune"] = detect_detune
             total_changes += SamplerProcessors.detect_zone_pitch(
                 model,
                 pitch_flags,
@@ -5904,17 +6099,54 @@ class SamplerProcessors:
             )
             model.refresh()
 
-        if processing_update.get("filename_mapping", False):
-            total_changes += SamplerProcessors.apply_filename_mapping(
+        if write_detune and detune_method == "fixed value":
+            total_changes += SamplerProcessors.set_zone_detune_fixed(
                 model,
+                global_values.get("param_fixed_detune", "0"),
                 log_func=log_func,
             )
             model.refresh()
 
-        if processing_update.get("spread_root", False):
+        if write_root and root_method == "generate interval":
+            total_changes += SamplerProcessors.generate_root_keys_interval(
+                model,
+                first_note=global_values.get("param_key_spread_first_note", "0"),
+                interval=global_values.get("param_key_spread_interval", "1"),
+                repeat_count=global_values.get("param_key_spread_repeat_count", "1"),
+                log_func=log_func,
+            )
+            model.refresh()
+
+        legacy_filename_mapping = bool(processing_update.get("filename_mapping", False))
+        filename_flags = {
+            "filename_write_root_key": legacy_filename_mapping or (write_root and root_method == "from filename"),
+            "filename_write_detune": legacy_filename_mapping or (write_detune and detune_method == "from filename"),
+            "filename_write_velocity": legacy_filename_mapping,
+            "filename_write_chain": legacy_filename_mapping,
+            "param_filename_root_key_prefix": global_values.get("param_filename_root_key_prefix", "P"),
+            "param_filename_velocity_prefix": global_values.get("param_filename_velocity_prefix", "V"),
+            "param_filename_chain_prefix": global_values.get("param_filename_chain_prefix", "C"),
+            "param_filename_detune_prefix": global_values.get("param_filename_detune_prefix", "D"),
+        }
+        if processing_update.get("velocity_range_mapping", False):
+            filename_flags["filename_write_velocity"] = filename_flags["filename_write_velocity"] or str(global_values.get("param_velocity_range_method", "")).strip().lower() == "from filename"
+        if processing_update.get("chain_range_mapping", False):
+            filename_flags["filename_write_chain"] = filename_flags["filename_write_chain"] or str(global_values.get("param_chain_range_method", "")).strip().lower() == "from filename"
+        if any(filename_flags[key] for key in ("filename_write_root_key", "filename_write_detune", "filename_write_velocity", "filename_write_chain")):
+            total_changes += SamplerProcessors.apply_filename_mapping(
+                model,
+                filename_flags,
+                log_func=log_func,
+            )
+            model.refresh()
+
+        if processing_update.get("key_range_mapping", False) or processing_update.get("spread_root", False):
+            key_values = dict(global_values)
+            if processing_update.get("key_range_mapping", False):
+                key_values["param_key_spread_mode"] = global_values.get("param_key_range_method", "around RootKey")
             total_changes += SamplerProcessors.spread_key_zones(
                 model,
-                global_values,
+                key_values,
                 log_func=log_func
             )
             model.refresh()
@@ -5989,6 +6221,97 @@ class SamplerProcessors:
                     log_func=log_func,
                 )
                 model.refresh()
+
+        if processing_update.get("velocity_range_mapping", False):
+            mode = str(global_values.get("param_velocity_range_method", "spread")).strip().lower()
+            if mode == "full":
+                total_changes += SamplerProcessors.set_full_range(
+                    model,
+                    "VelocityRange",
+                    1,
+                    127,
+                    min_value=global_values.get("param_velocity_range_min", "1"),
+                    max_value=global_values.get("param_velocity_range_max", "127"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "spread":
+                total_changes += SamplerProcessors.distribute_velocity_by_play_area(
+                    model,
+                    gamma=global_values.get("param_velocity_gamma", "1.0"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "sort by loudness":
+                total_changes += SamplerProcessors.sort_velocity_by_play_area(
+                    model,
+                    audio_cache=require_audio_cache(),
+                    gamma=global_values.get("param_velocity_gamma", "1.0"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "detect loudness":
+                total_changes += SamplerProcessors.detect_velocity_by_play_area(
+                    model,
+                    audio_cache=require_audio_cache(),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "extend":
+                total_changes += SamplerProcessors.extend_range_gaps(
+                    model,
+                    "VelocityRange",
+                    1,
+                    127,
+                    grouping_fields=("KeyRange", "SelectorRange"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "from filename":
+                pass
+            else:
+                log("Velocity ranges: unknown method {}; skipped.\n".format(mode))
+
+            if processing_update.get("auto_volume_vel_scale", False) and mode in ("spread", "sort by loudness", "detect loudness"):
+                total_changes += SamplerProcessors.auto_volume_velocity_scale(
+                    model,
+                    log_func=log_func,
+                )
+                model.refresh()
+
+        if processing_update.get("chain_range_mapping", False):
+            mode = str(global_values.get("param_chain_range_method", "spread")).strip().lower()
+            if mode == "full":
+                total_changes += SamplerProcessors.set_full_range(
+                    model,
+                    "SelectorRange",
+                    0,
+                    127,
+                    min_value=global_values.get("param_chain_range_min", "0"),
+                    max_value=global_values.get("param_chain_range_max", "127"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "spread":
+                total_changes += SamplerProcessors.chain_by_play_area(
+                    model,
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "extend":
+                total_changes += SamplerProcessors.extend_range_gaps(
+                    model,
+                    "SelectorRange",
+                    0,
+                    127,
+                    grouping_fields=("KeyRange", "VelocityRange"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "from filename":
+                pass
+            else:
+                log("Chain ranges: unknown method {}; skipped.\n".format(mode))
 
         if processing_update.get("zone_crossfades", False):
             total_changes += SamplerProcessors.crossfade_between_zones(
@@ -6409,6 +6732,13 @@ class SamplerAdvGui:
             "param_pitch_window_stop_number",
             "param_pitch_window_stop_unit",
             "param_pitch_extended_harmonic_correction",
+            "param_root_key_method",
+            "param_detune_method",
+            "param_fixed_detune",
+            "param_filename_root_key_prefix",
+            "param_filename_velocity_prefix",
+            "param_filename_chain_prefix",
+            "param_filename_detune_prefix",
             "param_sustain_loop_start_pct",
             "param_sustain_loop_start_unit",
             "param_sustain_loop_end_pct",
@@ -6427,6 +6757,15 @@ class SamplerAdvGui:
             "param_release_crossfade_custom_number",
             "param_release_crossfade_custom_unit",
             "param_normalize_amount_pct",
+            "param_key_range_min",
+            "param_key_range_max",
+            "param_key_range_method",
+            "param_velocity_range_min",
+            "param_velocity_range_max",
+            "param_velocity_range_method",
+            "param_chain_range_min",
+            "param_chain_range_max",
+            "param_chain_range_method",
             "param_multiple_notes_mode",
         ):
             if key in self.global_vars:
@@ -6851,7 +7190,7 @@ class SamplerAdvGui:
         return number_var, unit_var
 
     def _checked_number_unit_row(self, parent, row, label, checkbox_key, number_key, unit_key, default_number, default_unit, units, tooltip=""):
-        cb_var = tk.BooleanVar(value=True)
+        cb_var = tk.BooleanVar(value=False)
         self.processing_update[checkbox_key] = cb_var
         cb = ttk.Checkbutton(parent, variable=cb_var)
         cb.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
@@ -6880,7 +7219,7 @@ class SamplerAdvGui:
         return cb_var, number_var, unit_var
 
     def _checked_choice_row(self, parent, row, label, checkbox_key, choice_key, choices, default, tooltip=""):
-        cb_var = tk.BooleanVar(value=True)
+        cb_var = tk.BooleanVar(value=False)
         self.processing_update[checkbox_key] = cb_var
         cb = ttk.Checkbutton(parent, variable=cb_var)
         cb.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=3)
@@ -7037,21 +7376,54 @@ class SamplerAdvGui:
 
     def _refresh_pitch_detection_visibility(self):
         frame = getattr(self, "pitch_detection_options_frame", None)
-        if frame is None:
-            return
+        interval_frame = getattr(self, "root_interval_options_frame", None)
+        fixed_detune_frame = getattr(self, "fixed_detune_options_frame", None)
+        root_filename_frame = getattr(self, "root_filename_prefix_frame", None)
+        detune_filename_frame = getattr(self, "detune_filename_prefix_frame", None)
+        velocity_filename_frame = getattr(self, "velocity_filename_prefix_frame", None)
+        chain_filename_frame = getattr(self, "chain_filename_prefix_frame", None)
         try:
-            visible = bool(self.processing_update.get("pitch_detection_root", tk.BooleanVar(value=False)).get()) or bool(
-                self.processing_update.get("pitch_detection_detune", tk.BooleanVar(value=False)).get()
-            )
+            root_checked = bool(self.processing_update.get("pitch_detection_root", tk.BooleanVar(value=False)).get())
+            detune_checked = bool(self.processing_update.get("pitch_detection_detune", tk.BooleanVar(value=False)).get())
+            velocity_checked = bool(self.processing_update.get("velocity_range_mapping", tk.BooleanVar(value=False)).get())
+            chain_checked = bool(self.processing_update.get("chain_range_mapping", tk.BooleanVar(value=False)).get())
+            root_method = str(self.global_vars.get("param_root_key_method", tk.StringVar(value="detect pitch")).get()).strip().lower()
+            detune_method = str(self.global_vars.get("param_detune_method", tk.StringVar(value="detect pitch")).get()).strip().lower()
+            velocity_method = str(self.global_vars.get("param_velocity_range_method", tk.StringVar(value="spread")).get()).strip().lower()
+            chain_method = str(self.global_vars.get("param_chain_range_method", tk.StringVar(value="spread")).get()).strip().lower()
+            pitch_visible = (root_checked and root_method == "detect pitch") or (detune_checked and detune_method == "detect pitch")
+            interval_visible = root_checked and root_method == "generate interval"
+            fixed_detune_visible = detune_checked and detune_method == "fixed value"
+            root_filename_visible = root_checked and root_method == "from filename"
+            detune_filename_visible = detune_checked and detune_method == "from filename"
+            velocity_filename_visible = velocity_checked and velocity_method == "from filename"
+            chain_filename_visible = chain_checked and chain_method == "from filename"
         except Exception:
-            visible = False
-        try:
-            if visible:
-                frame.grid()
-            else:
-                frame.grid_remove()
-        except Exception:
-            pass
+            pitch_visible = False
+            interval_visible = False
+            fixed_detune_visible = False
+            root_filename_visible = False
+            detune_filename_visible = False
+            velocity_filename_visible = False
+            chain_filename_visible = False
+        for widget, visible in (
+            (frame, pitch_visible),
+            (interval_frame, interval_visible),
+            (fixed_detune_frame, fixed_detune_visible),
+            (root_filename_frame, root_filename_visible),
+            (detune_filename_frame, detune_filename_visible),
+            (velocity_filename_frame, velocity_filename_visible),
+            (chain_filename_frame, chain_filename_visible),
+        ):
+            if widget is None:
+                continue
+            try:
+                if visible:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+            except Exception:
+                pass
 
     def _set_split_mode_visibility(self, *_args):
         if not hasattr(self, "split_mode_sections") or not hasattr(self, "split_mode_selector_frame"):
@@ -7415,7 +7787,7 @@ class SamplerAdvGui:
             tooltip="Release-loop end is always the sample end. % is relative to the chosen base span, and signed values are allowed."
         )
         subrow += 1
-        release_stop_var = tk.BooleanVar(value=True)
+        release_stop_var = tk.BooleanVar(value=False)
         self.processing_update["release_loop_write_end"] = release_stop_var
         release_stop_cb = ttk.Checkbutton(release_loop_options, variable=release_stop_var)
         release_stop_cb.grid(row=subrow, column=0, sticky="w", padx=(4, 0), pady=3)
@@ -7484,7 +7856,7 @@ class SamplerAdvGui:
         self._register_visibility_rule(release_loop_var, release_loop_options)
         prow += 1
 
-        ttk.Label(per_zone_box, text="Pitch detection", font=("", 9, "bold")).grid(row=prow, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 3))
+        ttk.Label(per_zone_box, text="Tuning", font=("", 9, "bold")).grid(row=prow, column=0, columnspan=3, sticky="w", padx=4, pady=(8, 3))
         prow += 1
         self._param_row(
             per_zone_box,
@@ -7497,9 +7869,31 @@ class SamplerAdvGui:
             tooltip="Sampler pitch scale / TuneScale value applied to each zone.",
         )
         prow += 1
-        self._checkbox_row(per_zone_box, prow, "Detect root note", "pitch_detection_root", tooltip="Estimate the zone pitch and write RootKey.", command=self._refresh_pitch_detection_visibility)
+        root_key_write_var, root_key_method_var = self._checked_choice_row(per_zone_box, prow, "RootKey", "pitch_detection_root", "param_root_key_method", ["detect pitch", "from filename", "generate interval"], "detect pitch", tooltip="Write RootKey using the selected method.")
+        try:
+            root_key_write_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+            root_key_method_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+        except Exception:
+            pass
         prow += 1
-        self._checkbox_row(per_zone_box, prow, "Detect detune", "pitch_detection_detune", tooltip="Estimate fine pitch and write zone detune in direct signed cents (-50 to +50). Positive values mean the sample is played sharper.", command=self._refresh_pitch_detection_visibility)
+        root_filename_prefix_frame = ttk.Frame(per_zone_box)
+        root_filename_prefix_frame.grid(row=prow, column=1, columnspan=2, sticky="ew", padx=0, pady=0)
+        root_filename_prefix_frame.columnconfigure(2, weight=1)
+        self.root_filename_prefix_frame = root_filename_prefix_frame
+        self._param_row(root_filename_prefix_frame, 0, "Filename prefix", "param_filename_root_key_prefix", "P", tooltip="Prefix used when RootKey is read from filenames. Several characters are accepted.")
+        prow += 1
+        detune_write_var, detune_method_var = self._checked_choice_row(per_zone_box, prow, "Detune", "pitch_detection_detune", "param_detune_method", ["detect pitch", "from filename", "fixed value"], "detect pitch", tooltip="Write Detune using the selected method.")
+        try:
+            detune_write_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+            detune_method_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+        except Exception:
+            pass
+        prow += 1
+        detune_filename_prefix_frame = ttk.Frame(per_zone_box)
+        detune_filename_prefix_frame.grid(row=prow, column=1, columnspan=2, sticky="ew", padx=0, pady=0)
+        detune_filename_prefix_frame.columnconfigure(2, weight=1)
+        self.detune_filename_prefix_frame = detune_filename_prefix_frame
+        self._param_row(detune_filename_prefix_frame, 0, "Filename prefix", "param_filename_detune_prefix", "D", tooltip="Prefix used when Detune is read from filenames. Several characters are accepted.")
         prow += 1
         pitch_detection_options = ttk.Frame(per_zone_box)
         pitch_detection_options.grid(row=prow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
@@ -7541,77 +7935,126 @@ class SamplerAdvGui:
             tooltip="Allows sustained pitched sounds with weak fundamentals to correct to higher harmonics. Leave off for uncertain, percussive, or inharmonic sounds.",
         )
         prow += 1
-
-        row += 1
-
-        # MAPPING & PLAYBACK
-        mapping_box = ttk.LabelFrame(parent, text="MAPPING & PLAYBACK")
-        mapping_box.grid(row=row, column=0, columnspan=3, sticky="ew", padx=4, pady=(4, 8))
-        mapping_box.columnconfigure(2, weight=1)
-        mrow = 0
-
-        spread_root_var = self._checkbox_row(mapping_box, mrow, "Spread key zones", "spread_root", tooltip="Assign KeyRange values from RootKey using the selected spread mode.")
-        mrow += 1
-        spread_root_options = ttk.Frame(mapping_box)
-        spread_root_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        spread_root_options.columnconfigure(3, weight=1)
-        self._choice_row(spread_root_options, 0, "Mode", "param_key_spread_mode", ["around root key", "spread evenly", "first note + interval", "extend"], "around root key", tooltip="around root key uses neighboring root midpoints. spread evenly fills a chosen key span evenly across the detected roots. first note + interval uses the current zone order and generates evenly spaced note centers from a chosen starting note. extend only fills uncovered KeyRange gaps.")
-        spread_evenly_row = ttk.Frame(spread_root_options)
-        spread_evenly_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        spread_evenly_row.columnconfigure(1, weight=1)
-        self._param_row(spread_evenly_row, 0, "Min key", "param_key_spread_min", "0", tooltip="Lowest key used by the even spread mode.")
-        self._param_row(spread_evenly_row, 1, "Max key", "param_key_spread_max", "127", tooltip="Highest key used by the even spread mode.")
-        spread_interval_row = ttk.Frame(spread_root_options)
-        spread_interval_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        spread_interval_row.columnconfigure(3, weight=1)
-        self._param_row(spread_interval_row, 0, "First note", "param_key_spread_first_note", "0", tooltip="Starting MIDI note used by first note + interval mode.")
+        root_interval_options = ttk.Frame(per_zone_box)
+        root_interval_options.grid(row=prow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        root_interval_options.columnconfigure(3, weight=1)
+        self.root_interval_options_frame = root_interval_options
+        self._param_row(root_interval_options, 0, "First note", "param_key_spread_first_note", "0", tooltip="Starting MIDI note for generated RootKey values.")
         self.key_spread_first_note_label_var = tk.StringVar(value=midi_key_to_note_label(0))
-        ttk.Label(spread_interval_row, textvariable=self.key_spread_first_note_label_var).grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
-        self._param_row(spread_interval_row, 1, "Interval", "param_key_spread_interval", "1", tooltip="Distance in semitones between successive generated note centers.")
-        self._param_row(spread_interval_row, 2, "n times", "param_key_spread_repeat_count", "1", tooltip="Repeat each generated note center this many consecutive zones before moving by the interval.")
+        ttk.Label(root_interval_options, textvariable=self.key_spread_first_note_label_var).grid(row=0, column=2, sticky="w", padx=(0, 4), pady=3)
+        self._param_row(root_interval_options, 1, "Interval", "param_key_spread_interval", "1", tooltip="Distance in semitones between generated RootKey values.")
+        self._param_row(root_interval_options, 2, "n times", "param_key_spread_repeat_count", "1", tooltip="Repeat each generated RootKey this many consecutive zones before moving by the interval.")
         try:
             self.global_vars["param_key_spread_first_note"].trace_add("write", lambda *_args: self.update_key_spread_first_note_label())
         except Exception:
             pass
         self.update_key_spread_first_note_label()
+        self._refresh_pitch_detection_visibility()
+        prow += 1
+
+        fixed_detune_options = ttk.Frame(per_zone_box)
+        fixed_detune_options.grid(row=prow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        fixed_detune_options.columnconfigure(2, weight=1)
+        self.fixed_detune_options_frame = fixed_detune_options
+        self._param_row(fixed_detune_options, 0, "Fixed detune", "param_fixed_detune", "0", tooltip="Detune value in cents written to every zone when Detune uses fixed value.")
+        prow += 1
+
+        self._refresh_pitch_detection_visibility()
+
+        row += 1
+
+        # ZONE BOUNDARIES
+        mapping_box = ttk.LabelFrame(parent, text="ZONE BOUNDARIES")
+        mapping_box.grid(row=row, column=0, columnspan=3, sticky="ew", padx=4, pady=(4, 8))
+        mapping_box.columnconfigure(2, weight=1)
+        mrow = 0
+
+        spread_root_var, key_range_method_var = self._checked_choice_row(mapping_box, mrow, "Key ranges", "key_range_mapping", "param_key_range_method", ["around RootKey", "even", "full", "extend"], "around RootKey", tooltip="Write KeyRange boundaries using the selected method; RootKey values are not changed here. full writes every zone to the configured key span.")
+        mrow += 1
+        spread_root_options = ttk.Frame(mapping_box)
+        spread_root_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        spread_root_options.columnconfigure(3, weight=1)
+        spread_evenly_row = ttk.Frame(spread_root_options)
+        spread_evenly_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        spread_evenly_row.columnconfigure(1, weight=1)
+        self._param_row(spread_evenly_row, 0, "Min key", "param_key_range_min", "0", tooltip="Lowest key used by even and full key range modes.")
+        self._param_row(spread_evenly_row, 1, "Max key", "param_key_range_max", "127", tooltip="Highest key used by even and full key range modes.")
         self._register_visibility_rule(spread_root_var, spread_root_options)
         self._register_visibility_rule(
-            self.global_vars["param_key_spread_mode"],
+            key_range_method_var,
             spread_evenly_row,
-            predicate=lambda value: str(value).strip().lower() == "spread evenly",
-        )
-        self._register_visibility_rule(
-            self.global_vars["param_key_spread_mode"],
-            spread_interval_row,
-            predicate=lambda value: str(value).strip().lower() == "first note + interval",
+            predicate=lambda value: bool(spread_root_var.get()) and str(value).strip().lower() in ("even", "full"),
         )
         mrow += 1
-        self._checkbox_row(mapping_box, mrow, "Set key / velo / chain / detune from filename", "filename_mapping", tooltip="Parse permissive filename tokens like P064 V110 C001 D050 from the sample filename or zone name, and write RootKey, VelocityRange, SelectorRange, and Detune directly.")
+
+        velocity_range_var, velocity_range_method_var = self._checked_choice_row(mapping_box, mrow, "Velocity ranges", "velocity_range_mapping", "param_velocity_range_method", ["from filename", "spread", "sort by loudness", "detect loudness", "full", "extend"], "spread", tooltip="Write VelocityRange boundaries. spread/sort/detect only compare zones with the same KeyRange and current SelectorRange; full writes every zone to the configured velocity span.")
+        try:
+            velocity_range_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+            velocity_range_method_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+        except Exception:
+            pass
         mrow += 1
-        multiple_notes_var = self._checkbox_row(mapping_box, mrow, "Multiple notes case", "multiple_notes_case", tooltip="How to handle several zones sharing the same playback area.")
+        velocity_filename_prefix_frame = ttk.Frame(mapping_box)
+        velocity_filename_prefix_frame.grid(row=mrow, column=1, columnspan=2, sticky="ew", padx=0, pady=0)
+        velocity_filename_prefix_frame.columnconfigure(2, weight=1)
+        self.velocity_filename_prefix_frame = velocity_filename_prefix_frame
+        self._param_row(velocity_filename_prefix_frame, 0, "Filename prefix", "param_filename_velocity_prefix", "V", tooltip="Prefix used when VelocityRange is read from filenames. Several characters are accepted.")
         mrow += 1
-        multiple_notes_options = ttk.Frame(mapping_box)
-        multiple_notes_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        multiple_notes_options.columnconfigure(2, weight=1)
-        self._choice_row(multiple_notes_options, 0, "Mode", "param_multiple_notes_mode", ["layer", "spread velocity", "sort velocity", "detect velocity", "chain", "extend velocity", "extend chain"], "layer", tooltip="layer stacks without changing VelocityRange. spread velocity uses current order. sort velocity first sorts by measured loudness, then applies the same gamma spread. detect velocity derives the velocity boundaries directly from measured note strength. chain spreads SelectorRange across zones sharing the same key and velocity area. extend modes only fill uncovered gaps.")
-        gamma_row = ttk.Frame(multiple_notes_options)
-        gamma_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        gamma_row.columnconfigure(1, weight=1)
-        self._param_row(gamma_row, 0, "Gamma", "param_velocity_gamma", "1.0", tooltip="Non-linear velocity distribution for spread velocity. gamma < 1 gives lower velocities more range; gamma > 1 gives higher velocities more range.")
-        auto_volume_vel_scale_row = ttk.Frame(multiple_notes_options)
-        auto_volume_vel_scale_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
-        auto_volume_vel_scale_var = self._checkbox_row(auto_volume_vel_scale_row, 0, "Auto Volume>Velocity %", "auto_volume_vel_scale", tooltip="Set VolumeVelScale automatically from the average number of velocity layers per note. Example: 4 layers per note -> 25%.")
-        self._register_visibility_rule(multiple_notes_var, multiple_notes_options)
+        velocity_range_options = ttk.Frame(mapping_box)
+        velocity_range_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        velocity_range_options.columnconfigure(2, weight=1)
+        velocity_gamma_row = ttk.Frame(velocity_range_options)
+        velocity_gamma_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        velocity_gamma_row.columnconfigure(1, weight=1)
+        self._param_row(velocity_gamma_row, 0, "Gamma", "param_velocity_gamma", "1.0", tooltip="Non-linear velocity distribution for spread velocity. gamma < 1 gives lower velocities more range; gamma > 1 gives higher velocities more range.")
+        velocity_full_row = ttk.Frame(velocity_range_options)
+        velocity_full_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        velocity_full_row.columnconfigure(2, weight=1)
+        self._param_row(velocity_full_row, 0, "Min velocity", "param_velocity_range_min", "1", tooltip="Lowest velocity used by full velocity range mode.")
+        self._param_row(velocity_full_row, 1, "Max velocity", "param_velocity_range_max", "127", tooltip="Highest velocity used by full velocity range mode.")
+        self._register_visibility_rule(velocity_range_var, velocity_range_options)
         self._register_visibility_rule(
-            self.global_vars["param_multiple_notes_mode"],
-            gamma_row,
-            predicate=lambda value: str(value).strip().lower() in ("spread velocity", "sort velocity"),
+            velocity_range_method_var,
+            velocity_gamma_row,
+            predicate=lambda value: bool(velocity_range_var.get()) and str(value).strip().lower() in ("spread", "sort by loudness"),
         )
         self._register_visibility_rule(
-            self.global_vars["param_multiple_notes_mode"],
-            auto_volume_vel_scale_row,
-            predicate=lambda value: str(value).strip().lower() in ("spread velocity", "sort velocity", "detect velocity"),
+            velocity_range_method_var,
+            velocity_full_row,
+            predicate=lambda value: bool(velocity_range_var.get()) and str(value).strip().lower() == "full",
         )
+        mrow += 1
+
+        chain_range_var, chain_range_method_var = self._checked_choice_row(mapping_box, mrow, "Chain ranges", "chain_range_mapping", "param_chain_range_method", ["from filename", "spread", "full", "extend"], "spread", tooltip="Write SelectorRange / chain boundaries. spread splits the chain selector among zones with the same KeyRange and current VelocityRange; full writes every zone to the configured chain span.")
+        try:
+            chain_range_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+            chain_range_method_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
+        except Exception:
+            pass
+        mrow += 1
+        chain_filename_prefix_frame = ttk.Frame(mapping_box)
+        chain_filename_prefix_frame.grid(row=mrow, column=1, columnspan=2, sticky="ew", padx=0, pady=0)
+        chain_filename_prefix_frame.columnconfigure(2, weight=1)
+        self.chain_filename_prefix_frame = chain_filename_prefix_frame
+        self._param_row(chain_filename_prefix_frame, 0, "Filename prefix", "param_filename_chain_prefix", "C", tooltip="Prefix used when SelectorRange is read from filenames. Several characters are accepted.")
+        mrow += 1
+        chain_range_options = ttk.Frame(mapping_box)
+        chain_range_options.grid(row=mrow, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        chain_range_options.columnconfigure(2, weight=1)
+        chain_full_row = ttk.Frame(chain_range_options)
+        chain_full_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        chain_full_row.columnconfigure(2, weight=1)
+        self._param_row(chain_full_row, 0, "Min chain", "param_chain_range_min", "0", tooltip="Lowest chain selector value used by full chain range mode.")
+        self._param_row(chain_full_row, 1, "Max chain", "param_chain_range_max", "127", tooltip="Highest chain selector value used by full chain range mode.")
+        self._register_visibility_rule(chain_range_var, chain_range_options)
+        self._register_visibility_rule(
+            chain_range_method_var,
+            chain_full_row,
+            predicate=lambda value: bool(chain_range_var.get()) and str(value).strip().lower() == "full",
+        )
+        mrow += 1
+
+        auto_volume_vel_scale_var = self._checkbox_row(mapping_box, mrow, "Auto Volume>Velocity %", "auto_volume_vel_scale", tooltip="Set VolumeVelScale automatically from the average number of velocity layers per note. Example: 4 layers per note -> 25%.")
         mrow += 1
 
         zone_crossfades_var = self._checkbox_row(mapping_box, mrow, "Crossfade between zones", "zone_crossfades", tooltip="Expand adjacent key, velocity, or selector ranges and keep the original edges as the fade core.")
@@ -7855,6 +8298,7 @@ class SamplerAdvGui:
                     store[k].set(bool(val))
         migrate_generic_panel_write_flags(DEFAULT_TOOL_TEMPLATE, self.global_update)
         migrate_envelope_write_flags(DEFAULT_TOOL_TEMPLATE, self.global_update)
+        migrate_mapping_method_flags(DEFAULT_TOOL_TEMPLATE, self.global_vars, self.processing_update)
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
             if split_mode == "off":
@@ -7944,6 +8388,7 @@ class SamplerAdvGui:
         migrate_loop_write_flags(data, self.processing_update)
         migrate_generic_panel_write_flags(data, self.global_update)
         migrate_envelope_write_flags(data, self.global_update)
+        migrate_mapping_method_flags(data, self.global_vars, self.processing_update)
 
         if "param_split_mode" in self.global_vars:
             split_mode = self.global_vars["param_split_mode"].get()
@@ -9166,14 +9611,16 @@ class SamplerAdvGui:
                 if freq_hz is None:
                     continue
                 _midi_float, detected_root, detected_cents = AudioAnalysis.frequency_to_midi_parts(freq_hz, diapason_hz=diapason_hz)
-                if bool(self.processing_update.get("pitch_detection_root", tk.BooleanVar(value=False)).get()):
+                root_method = str(self.global_vars.get("param_root_key_method", tk.StringVar(value="detect pitch")).get()).strip().lower()
+                detune_method = str(self.global_vars.get("param_detune_method", tk.StringVar(value="detect pitch")).get()).strip().lower()
+                if bool(self.processing_update.get("pitch_detection_root", tk.BooleanVar(value=False)).get()) and root_method == "detect pitch":
                     annotations[idx]["items"].append((midi_key_to_note_label(detected_root), pitch_color))
-                if bool(self.processing_update.get("pitch_detection_detune", tk.BooleanVar(value=False)).get()):
+                if bool(self.processing_update.get("pitch_detection_detune", tk.BooleanVar(value=False)).get()) and detune_method == "detect pitch":
                     annotations[idx]["items"].append(("({:+.0f})".format(detected_cents), detune_color))
 
-        if bool(self.processing_update.get("multiple_notes_case", tk.BooleanVar(value=False)).get()):
-            mode = str(self.global_vars.get("param_multiple_notes_mode", tk.StringVar(value="layer")).get()).strip().lower()
-            if mode == "detect velocity":
+        if bool(self.processing_update.get("velocity_range_mapping", tk.BooleanVar(value=False)).get()) or bool(self.processing_update.get("multiple_notes_case", tk.BooleanVar(value=False)).get()):
+            mode = str(self.global_vars.get("param_velocity_range_method", self.global_vars.get("param_multiple_notes_mode", tk.StringVar(value="layer"))).get()).strip().lower()
+            if mode == "detect loudness":
                 strengths = []
                 valid_indices = []
                 for idx, (slice_start, slice_end) in enumerate(slice_bounds):
@@ -9189,13 +9636,15 @@ class SamplerAdvGui:
                         idx = valid_indices[ranked_local_idx]
                         annotations[idx]["items"].append(("V{}-{}".format(mn, mx), velocity_color))
             elif mode == "spread velocity":
+                mode = "spread"
+            if mode == "spread":
                 gamma = parse_number_from_text(self.global_vars.get("param_velocity_gamma", tk.StringVar(value="1.0")).get(), 1.0)
                 n = len(slice_bounds)
                 if n > 0:
                     ranges = SamplerProcessors.spread_velocity_ranges_for_count(n, gamma=gamma)
                     for idx, (mn, mx) in enumerate(ranges):
                         annotations[idx]["items"].append(("V{}-{}".format(mn, mx), velocity_color))
-            elif mode == "sort velocity":
+            elif mode in ("sort velocity", "sort by loudness"):
                 gamma = parse_number_from_text(self.global_vars.get("param_velocity_gamma", tk.StringVar(value="1.0")).get(), 1.0)
                 strengths = []
                 valid_indices = []
@@ -9212,7 +9661,10 @@ class SamplerAdvGui:
                         idx = valid_indices[ranked_local_idx]
                         mn, mx = ranges[rank_position]
                         annotations[idx]["items"].append(("V{}-{}".format(mn, mx), velocity_color))
-            elif mode == "chain":
+
+        if bool(self.processing_update.get("chain_range_mapping", tk.BooleanVar(value=False)).get()) or bool(self.processing_update.get("multiple_notes_case", tk.BooleanVar(value=False)).get()):
+            mode = str(self.global_vars.get("param_chain_range_method", self.global_vars.get("param_multiple_notes_mode", tk.StringVar(value="layer"))).get()).strip().lower()
+            if mode in ("spread", "chain"):
                 ranges = SamplerProcessors.chain_ranges_for_count(len(slice_bounds))
                 for idx, (mn, mx) in enumerate(ranges):
                     annotations[idx]["items"].append(("C{}-{}".format(mn, mx), chain_color))
@@ -9568,14 +10020,14 @@ class SamplerAdvGui:
 
         predicted_sustain_loops = []
         predicted_release_loops = []
-        sustain_write_start = bool(self.processing_update.get("loop_write_start", tk.BooleanVar(value=True)).get())
-        sustain_write_end = bool(self.processing_update.get("loop_write_end", tk.BooleanVar(value=True)).get())
-        sustain_write_crossfade = bool(self.processing_update.get("loop_write_crossfade", tk.BooleanVar(value=True)).get())
-        sustain_write_search = bool(self.processing_update.get("loop_write_search", tk.BooleanVar(value=True)).get())
-        release_write_start = bool(self.processing_update.get("release_loop_write_start", tk.BooleanVar(value=True)).get())
-        release_write_end = bool(self.processing_update.get("release_loop_write_end", tk.BooleanVar(value=True)).get())
-        release_write_crossfade = bool(self.processing_update.get("release_loop_write_crossfade", tk.BooleanVar(value=True)).get())
-        release_write_search = bool(self.processing_update.get("release_loop_write_search", tk.BooleanVar(value=True)).get())
+        sustain_write_start = bool(self.processing_update.get("loop_write_start", tk.BooleanVar(value=False)).get())
+        sustain_write_end = bool(self.processing_update.get("loop_write_end", tk.BooleanVar(value=False)).get())
+        sustain_write_crossfade = bool(self.processing_update.get("loop_write_crossfade", tk.BooleanVar(value=False)).get())
+        sustain_write_search = bool(self.processing_update.get("loop_write_search", tk.BooleanVar(value=False)).get())
+        release_write_start = bool(self.processing_update.get("release_loop_write_start", tk.BooleanVar(value=False)).get())
+        release_write_end = bool(self.processing_update.get("release_loop_write_end", tk.BooleanVar(value=False)).get())
+        release_write_crossfade = bool(self.processing_update.get("release_loop_write_crossfade", tk.BooleanVar(value=False)).get())
+        release_write_search = bool(self.processing_update.get("release_loop_write_search", tk.BooleanVar(value=False)).get())
         use_predicted_slice_loops = (
             overlay_flags["split_detection"]
             or overlay_flags["split_gate"]
