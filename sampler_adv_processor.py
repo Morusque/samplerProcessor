@@ -4,8 +4,10 @@
 """Standalone Tkinter tool for post-processing Ableton Sampler .adv files."""
 
 
+import collections
 import gzip
 import json
+import logging
 import math
 import os
 import shutil
@@ -18,6 +20,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
+_logger = logging.getLogger(__name__)
 
 try:
     import numpy as np
@@ -52,6 +56,10 @@ TEMPLATE_LIBRARY_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_ADV_SCAFFOLD_PATH = Path(__file__).resolve().parent / "test01.adv"
 DEFAULT_TOOL_TEMPLATE_PATH = TEMPLATE_LIBRARY_DIR / "default values 01.json"
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".aif", ".aiff", ".flac", ".ogg", ".mp3", ".m4a", ".caf"}
+MIDI_NOTE_MIN = 0
+MIDI_NOTE_MAX = 127
+MIN_ZONE_ANALYSIS_SAMPLES = 2048
+AUDIO_CACHE_MAX_FILES = 32
 
 
 def app_backup_dir():
@@ -74,7 +82,7 @@ def load_default_tool_template():
         if DEFAULT_TOOL_TEMPLATE_PATH.exists():
             return json.loads(DEFAULT_TOOL_TEMPLATE_PATH.read_text(encoding="utf-8"))
     except Exception:
-        pass
+        _logger.warning("Failed to load default tool template from %s", DEFAULT_TOOL_TEMPLATE_PATH, exc_info=True)
     return None
 
 
@@ -1585,6 +1593,7 @@ class SamplerAdvModel:
                     try:
                         match = next(resolved_root.rglob(sample_name), None)
                     except Exception:
+                        _logger.debug("rglob failed for %r under %s", sample_name, resolved_root, exc_info=True)
                         match = None
                     if match is not None:
                         return match.resolve()
@@ -1771,8 +1780,7 @@ class SamplerAdvModel:
         for prefix, vals in (("sustain", sustain_vals), ("release", release_vals)):
             if int(vals["start"]) >= int(vals["end"]):
                 raise ValueError("Loop start must be < loop end.")
-            vals["mode"] = loop_mode_value_from_label(prefix, vals["mode"])
-            int(vals["mode"])
+            vals["mode"] = str(int(loop_mode_value_from_label(prefix, vals["mode"])))
             vals["crossfade"] = str(clamp_loop_crossfade(ss, int(vals["start"]), int(vals["end"]), int(vals["crossfade"])))
             vals["detune"] = str(clamp_int(parse_number_from_text(vals["detune"], 0), -1200, 1200))
 
@@ -2256,7 +2264,7 @@ def duration_text_to_beats(text):
 
 def midi_key_to_note_label(midi_key):
     note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    midi_key = clamp_int(midi_key, 0, 127)
+    midi_key = clamp_int(midi_key, MIDI_NOTE_MIN, MIDI_NOTE_MAX)
     octave = (midi_key // 12) - 2
     return "{} {}".format(note_names[midi_key % 12], octave)
 
@@ -2318,13 +2326,13 @@ def write_midi_file(path, events, tempo_bpm=100.0, ticks_per_quarter=480, track_
 
 def zone_range_midpoint(range_vals, default_value):
     try:
-        mn = clamp_int(range_vals.get("min", default_value), 0, 127)
-        mx = clamp_int(range_vals.get("max", default_value), 0, 127)
+        mn = clamp_int(range_vals.get("min", default_value), MIDI_NOTE_MIN, MIDI_NOTE_MAX)
+        mx = clamp_int(range_vals.get("max", default_value), MIDI_NOTE_MIN, MIDI_NOTE_MAX)
     except Exception:
-        return clamp_int(default_value, 0, 127)
+        return clamp_int(default_value, MIDI_NOTE_MIN, MIDI_NOTE_MAX)
     if mx < mn:
         mn, mx = mx, mn
-    return clamp_int(int(round((mn + mx) / 2.0)), 0, 127)
+    return clamp_int(int(round((mn + mx) / 2.0)), MIDI_NOTE_MIN, MIDI_NOTE_MAX)
 
 
 def note_inside_range_near_root(range_vals, root_key):
@@ -2332,10 +2340,10 @@ def note_inside_range_near_root(range_vals, root_key):
         mn = clamp_int(range_vals.get("min", root_key), 0, 127)
         mx = clamp_int(range_vals.get("max", root_key), 0, 127)
     except Exception:
-        return clamp_int(root_key, 0, 127)
+        return clamp_int(root_key, MIDI_NOTE_MIN, MIDI_NOTE_MAX)
     if mx < mn:
         mn, mx = mx, mn
-    root_key = clamp_int(root_key, 0, 127)
+    root_key = clamp_int(root_key, MIDI_NOTE_MIN, MIDI_NOTE_MAX)
     return clamp_int(root_key, mn, mx)
 
 
@@ -2407,6 +2415,7 @@ def build_midi_test_plan(model, audio_cache, tempo_bpm=100.0, selector_cc=1):
             zone_audio = audio_cache.get_zone_audio(model, zone)
             hold_seconds, tail_seconds = zone_loop_runtime_seconds(model, zone, zone_audio)
         except Exception:
+            _logger.warning("Could not load audio for zone %d; using default durations", index, exc_info=True)
             hold_seconds, tail_seconds = 1.0, 0.10
         zones.append({
             "index": index,
@@ -2457,7 +2466,7 @@ def build_midi_test_events(plan, tempo_bpm=100.0, selector_cc=1, ticks_per_quart
         if event.get("use_selector_cc", False):
             selector_value = clamp_int(event.get("selector", 64), 0, 127)
             if selector_value != last_selector:
-                events.append((current_delta, bytes([0xB0, clamp_int(selector_cc, 0, 127), selector_value])))
+                events.append((current_delta, bytes([0xB0, clamp_int(selector_cc, MIDI_NOTE_MIN, MIDI_NOTE_MAX), selector_value])))
                 current_delta = 0
                 last_selector = selector_value
         note_value = clamp_int(event.get("note", 60), 0, 127)
@@ -2509,7 +2518,7 @@ class ZoneAudioSlice:
 
 class ZoneAudioCache:
     def __init__(self):
-        self.cache = {}
+        self.cache = collections.OrderedDict()
 
     def clear(self):
         self.cache.clear()
@@ -2541,6 +2550,8 @@ class ZoneAudioCache:
 
         mono = np.mean(audio, axis=1, dtype=np.float32)
         self.cache[cache_key] = (mono, int(sample_rate))
+        while len(self.cache) > AUDIO_CACHE_MAX_FILES:
+            self.cache.popitem(last=False)
         return self.cache[cache_key]
 
     def get_zone_audio(self, model, zone):
@@ -3094,13 +3105,13 @@ class AudioAnalysis:
         midi_float = 69.0 + (12.0 * math.log2(float(freq_hz) / diapason_hz))
         root_key = int(round(midi_float))
         cents = (midi_float - root_key) * 100.0
-        root_key = clamp_int(root_key, 0, 127)
+        root_key = clamp_int(root_key, MIDI_NOTE_MIN, MIDI_NOTE_MAX)
         cents = max(-50.0, min(50.0, cents))
         return midi_float, root_key, cents
 
     @staticmethod
     def midi_key_to_frequency(root_key, diapason_hz=440.0):
-        root_key = clamp_int(root_key, 0, 127)
+        root_key = clamp_int(root_key, MIDI_NOTE_MIN, MIDI_NOTE_MAX)
         diapason_hz = max(1e-6, float(parse_number_from_text(diapason_hz, 440.0)))
         return diapason_hz * math.pow(2.0, (root_key - 69) / 12.0)
 
@@ -3196,7 +3207,7 @@ class AudioAnalysis:
                 b, a = signal.butter(1, 60.0 / (float(sample_rate) * 0.5), btype="highpass")
                 values = signal.lfilter(b, a, values)
             except Exception:
-                pass
+                _logger.debug("Highpass pre-filter failed; continuing without it", exc_info=True)
 
         frame_size = max(1, int(round(float(sample_rate) * 0.4)))
         hop_size = max(1, int(round(float(sample_rate) * 0.1)))
@@ -3414,7 +3425,7 @@ class AudioAnalysis:
     def find_loop_points(samples, sample_rate, start_pct=25.0, end_pct=75.0, shift_pct=25.0, search_range_samples=None, fade_policy="No fade", fade_custom_number="25", fade_custom_unit="%", pitch_hz=None, target_start_sample=None, target_end_sample=None):
         values = np.asarray(samples, dtype=np.float64)
         zone_length = len(values)
-        if zone_length < 2048:
+        if zone_length < MIN_ZONE_ANALYSIS_SAMPLES:
             return None
 
         start_pct = max(0.0, min(95.0, float(start_pct)))
@@ -3570,7 +3581,7 @@ class AudioAnalysis:
     def find_release_loop_to_sample_end(samples, sample_rate, start_pct=85.0, shift_pct=10.0, search_range_samples=None, fade_policy="No fade", fade_custom_number="25", fade_custom_unit="%", pitch_hz=None, target_start_sample=None):
         values = np.asarray(samples, dtype=np.float64)
         zone_length = len(values)
-        if zone_length < 2048:
+        if zone_length < MIN_ZONE_ANALYSIS_SAMPLES:
             return None
 
         start_pct = max(0.0, min(95.0, float(start_pct)))
@@ -3665,7 +3676,7 @@ class AudioAnalysis:
         )
         activity_end = max(0, min(int(activity_end), len(values) - 1))
         remaining = len(values) - activity_end
-        if remaining < 2048:
+        if remaining < MIN_ZONE_ANALYSIS_SAMPLES:
             return None
         return activity_end
 
@@ -3765,7 +3776,7 @@ class SamplerProcessors:
 
         source = model.get_zone(zone_index)
         source_audio = audio_cache.get_zone_audio(model, source)
-        if len(source_audio.samples) < 2048:
+        if len(source_audio.samples) < MIN_ZONE_ANALYSIS_SAMPLES:
             log("Detection split: source zone is too short to analyze; skipped.\n")
             return 0
 
@@ -3846,7 +3857,7 @@ class SamplerProcessors:
 
         source = model.get_zone(zone_index)
         source_audio = audio_cache.get_zone_audio(model, source)
-        if len(source_audio.samples) < 2048:
+        if len(source_audio.samples) < MIN_ZONE_ANALYSIS_SAMPLES:
             log("Detect split: source zone is too short to analyze; skipped.\n")
             return 0
 
@@ -4710,7 +4721,7 @@ class SamplerProcessors:
                 root = int(float(raw))
             except Exception:
                 continue
-            root = max(0, min(127, root))
+            root = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, root))
             root_to_indices.setdefault(root, []).append(i)
 
         roots = sorted(root_to_indices.keys())
@@ -4743,8 +4754,8 @@ class SamplerProcessors:
                 next_root = roots[idx + 1]
                 mx = int((root + next_root) // 2)
 
-            mn = max(0, min(127, mn))
-            mx = max(0, min(127, mx))
+            mn = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, mn))
+            mx = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, mx))
             if mn > mx:
                 mn, mx = mx, mn
 
@@ -4776,8 +4787,8 @@ class SamplerProcessors:
             log("Spread evenly: no usable RootKey values found.\n")
             return 0
 
-        key_min = max(0, min(127, int(key_min)))
-        key_max = max(0, min(127, int(key_max)))
+        key_min = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, int(key_min)))
+        key_max = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, int(key_max)))
         if key_min > key_max:
             key_min, key_max = key_max, key_min
 
@@ -4846,7 +4857,7 @@ class SamplerProcessors:
         centers = []
         for idx in range(zone_count):
             group_index = idx // repeat_count
-            center = clamp_int(first_note + (group_index * interval), 0, 127)
+            center = clamp_int(first_note + (group_index * interval), MIDI_NOTE_MIN, MIDI_NOTE_MAX)
             centers.append(center)
 
         unique_centers = []
@@ -4867,8 +4878,8 @@ class SamplerProcessors:
             else:
                 mx = int((center + unique_centers[idx + 1]) // 2)
 
-            mn = max(0, min(127, mn))
-            mx = max(0, min(127, mx))
+            mn = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, mn))
+            mx = max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, mx))
             if mn > mx:
                 mn, mx = mx, mn
 
@@ -5094,7 +5105,7 @@ class SamplerProcessors:
 
             zone_changed = False
             if write_root and "P" in tokens:
-                root_key = clamp_int(tokens["P"], 0, 127)
+                root_key = clamp_int(tokens["P"], MIDI_NOTE_MIN, MIDI_NOTE_MAX)
                 current_root = zone.get("RootKey", "") if isinstance(zone, dict) else get_value(zone, "RootKey", "")
                 if current_root != str(root_key):
                     if isinstance(zone, dict):
@@ -5119,7 +5130,7 @@ class SamplerProcessors:
                     model.write_range(zone, "VelocityRange", target)
                     zone_changed = True
             if write_chain and "C" in tokens:
-                chain = clamp_int(tokens["C"], 0, 127)
+                chain = clamp_int(tokens["C"], MIDI_NOTE_MIN, MIDI_NOTE_MAX)
                 current = model.read_range(zone, "SelectorRange")
                 target = {"min": str(chain), "max": str(chain), "xfade_min": str(chain), "xfade_max": str(chain)}
                 if current != target:
@@ -5174,7 +5185,7 @@ class SamplerProcessors:
         updated = 0
         for idx in range(zone_count):
             group_index = idx // repeat_count
-            root = clamp_int(first_note + (group_index * interval), 0, 127)
+            root = clamp_int(first_note + (group_index * interval), MIDI_NOTE_MIN, MIDI_NOTE_MAX)
             zone = model.get_zone(idx)
             current = zone.get("RootKey", "") if isinstance(zone, dict) else get_value(zone, "RootKey", "")
             if current == str(root):
@@ -5528,7 +5539,7 @@ class SamplerProcessors:
         starts = []
         for idx in range(count):
             start = int(round((idx * 128.0) / float(count)))
-            starts.append(max(0, min(127, start)))
+            starts.append(max(MIDI_NOTE_MIN, min(MIDI_NOTE_MAX, start)))
 
         ranges = []
         for idx, start in enumerate(starts):
@@ -5625,9 +5636,9 @@ class SamplerProcessors:
             else:
                 root_key_value = get_value(zone, "RootKey", "0")
             return (
-                clamp_int(values["min"], 0, 127),
-                clamp_int(values["max"], 0, 127),
-                clamp_int(root_key_value, 0, 127),
+                clamp_int(values["min"], MIDI_NOTE_MIN, MIDI_NOTE_MAX),
+                clamp_int(values["max"], MIDI_NOTE_MIN, MIDI_NOTE_MAX),
+                clamp_int(root_key_value, MIDI_NOTE_MIN, MIDI_NOTE_MAX),
             )
         if criterion in ("velocity", "velo"):
             values = model.read_range(zone, "VelocityRange")
@@ -5638,8 +5649,8 @@ class SamplerProcessors:
         if criterion in ("chain", "selector"):
             values = model.read_range(zone, "SelectorRange")
             return (
-                clamp_int(values["min"], 0, 127),
-                clamp_int(values["max"], 0, 127),
+                clamp_int(values["min"], MIDI_NOTE_MIN, MIDI_NOTE_MAX),
+                clamp_int(values["max"], MIDI_NOTE_MIN, MIDI_NOTE_MAX),
             )
         if criterion in ("start timing in audio file", "start timing", "sample start", "start"):
             if isinstance(zone, dict):

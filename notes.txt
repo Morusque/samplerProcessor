@@ -4,8 +4,21 @@ done, to be tested :
 sorted mostly from probably quickest to more complex :
 
 test or define first :
+- pitch spread : pattern (eg C G -> octave etc)
+- grid : end after : % unit
+- detected attack isn't always good (ed "synth chime with some reverb 01.wav")
 - more tests on approved files (including refined files) mainly for the tuning part
 - investigate threading (this should not be mixed with other tasks)
 - discuss file ops
 - edge case to handle the best possible way : detect detune but not root note
 - loop start logic : start late and try to move it earlier until best position
+- default voices : 32 (eg when starting from wave file even if box unchecked), same with "envelope Loop" and probably many other things?
+- option to convert my "old" round robin method (based on lfo) to "new" actual one
+- apply on sub samplers in drum racks or instrument racks
+- manually remove or add split points
+- option "auto-update" chen changes or not
+- when normalizing, make sur all zones (or split zones) are similar in volume while staying under 24dB (max value)
+- option to sort by velocity but with some round robin alternatives
+- add gamma over existing velocities
+- separate ons and offs (two groups of velocities)
+
