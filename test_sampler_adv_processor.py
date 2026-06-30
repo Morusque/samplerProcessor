@@ -312,11 +312,42 @@ class FakeNormalizeModel:
         return self.zone
 
 
+class FakeMultiNormalizeModel:
+    def __init__(self, sample_sets, volume="1.0"):
+        self.zones = []
+        self.audio_map = {}
+        for index, samples in enumerate(sample_sets):
+            zone = MODULE.ET.Element("MultiSamplePart")
+            for tag, value in (
+                ("Name", "normalize-zone-{}".format(index)),
+                ("Volume", volume),
+                ("SampleStart", "0"),
+                ("SampleEnd", str(len(samples))),
+            ):
+                node = MODULE.ET.SubElement(zone, tag)
+                node.set("Value", str(value))
+            self.zones.append(zone)
+            self.audio_map[id(zone)] = SimpleNamespace(
+                samples=samples,
+                sample_rate=48000,
+                zone_start=0,
+                zone_end=len(samples),
+            )
+
+    def zone_count(self):
+        return len(self.zones)
+
+    def get_zone(self, index):
+        return self.zones[index]
+
+
 class FakeNormalizeAudioCache:
     def __init__(self, model):
         self.model = model
 
     def get_zone_audio(self, _model, _zone):
+        if hasattr(self.model, "audio_map"):
+            return self.model.audio_map[id(_zone)]
         return self.model.audio
 
 
@@ -761,6 +792,77 @@ class SamplerAdvProcessorTests(unittest.TestCase):
         vel = model.read_range(zone, "VelocityRange")
         self.assertEqual((vel["min"], vel["max"]), ("1", "127"))
 
+    def test_sort_velocity_round_robin_assigns_selector_alternatives(self):
+        model = FakeVelocityModel([0.80, 0.10, 0.40, 0.20])
+        audio_cache = FakeVelocityAudioCache(model)
+
+        count = MODULE.SamplerProcessors.sort_velocity_round_robin_by_play_area(
+            model,
+            audio_cache,
+            alternatives=2,
+            gamma=1.0,
+        )
+
+        self.assertEqual(count, 4)
+        ranges = [model.read_range(model.get_zone(i), "VelocityRange") for i in range(model.zone_count())]
+        selectors = [model.read_range(model.get_zone(i), "SelectorRange") for i in range(model.zone_count())]
+        # Zones sharing a velocity layer keep one VelocityRange so Ableton's native
+        # Sampler round-robin can cycle between them; SelectorRange/chain is left
+        # untouched (the dedicated "Chain ranges" mapping owns that).
+        self.assertEqual((ranges[1]["min"], ranges[1]["max"]), ("1", "64"))
+        self.assertEqual((ranges[3]["min"], ranges[3]["max"]), ("1", "64"))
+        self.assertEqual((ranges[2]["min"], ranges[2]["max"]), ("65", "127"))
+        self.assertEqual((ranges[0]["min"], ranges[0]["max"]), ("65", "127"))
+        self.assertTrue(all((selector["min"], selector["max"]) == ("0", "127") for selector in selectors))
+
+    def test_sort_velocity_round_robin_one_alternative_matches_plain_sort(self):
+        model = FakeVelocityModel([0.75, 0.15, 0.35])
+        for zone in model.zones:
+            zone["SelectorRange"] = {"min": "10", "max": "20", "xfade_min": "10", "xfade_max": "20"}
+        audio_cache = FakeVelocityAudioCache(model)
+
+        count = MODULE.SamplerProcessors.sort_velocity_round_robin_by_play_area(
+            model,
+            audio_cache,
+            alternatives=1,
+            gamma=1.0,
+        )
+
+        self.assertEqual(count, 3)
+        ranges = [model.read_range(model.get_zone(i), "VelocityRange") for i in range(model.zone_count())]
+        selectors = [model.read_range(model.get_zone(i), "SelectorRange") for i in range(model.zone_count())]
+        self.assertEqual((ranges[1]["min"], ranges[1]["max"]), ("1", "42"))
+        self.assertEqual((ranges[2]["min"], ranges[2]["max"]), ("43", "85"))
+        self.assertEqual((ranges[0]["min"], ranges[0]["max"]), ("86", "127"))
+        self.assertTrue(all((selector["min"], selector["max"]) == ("10", "20") for selector in selectors))
+
+    def test_apply_gamma_to_existing_velocity_ranges_reshapes_in_place(self):
+        model = FakeVelocityModel([0.1, 0.2, 0.3, 0.4])
+        existing = [("1", "32"), ("33", "64"), ("65", "96"), ("97", "127")]
+        for zone, (mn, mx) in zip(model.zones, existing):
+            model.write_range(zone, "VelocityRange", {"min": mn, "max": mx, "xfade_min": mn, "xfade_max": mx})
+
+        count = MODULE.SamplerProcessors.apply_gamma_to_existing_velocity_ranges(model, gamma=2.0)
+
+        self.assertEqual(count, 4)
+        ranges = [model.read_range(model.get_zone(i), "VelocityRange") for i in range(model.zone_count())]
+        # gamma > 1 gives higher velocities more range: zones shrink near the
+        # bottom and grow near the top, but stay contiguous across 1..127 and
+        # keep their original order/count.
+        self.assertEqual((ranges[0]["min"], ranges[0]["max"]), ("1", "8"))
+        self.assertEqual((ranges[1]["min"], ranges[1]["max"]), ("9", "32"))
+        self.assertEqual((ranges[2]["min"], ranges[2]["max"]), ("33", "73"))
+        self.assertEqual((ranges[3]["min"], ranges[3]["max"]), ("74", "127"))
+
+    def test_apply_gamma_to_existing_velocity_ranges_skips_single_zone_groups(self):
+        model = FakeVelocityModel([0.1])
+        original = model.read_range(model.get_zone(0), "VelocityRange")
+
+        count = MODULE.SamplerProcessors.apply_gamma_to_existing_velocity_ranges(model, gamma=2.0)
+
+        self.assertEqual(count, 0)
+        self.assertEqual(model.read_range(model.get_zone(0), "VelocityRange"), original)
+
     def test_full_velocity_and_chain_ranges_write_same_span_to_every_zone(self):
         model = FakeRangeModel([
             (
@@ -819,6 +921,32 @@ class SamplerAdvProcessorTests(unittest.TestCase):
 
         self.assertEqual(with_first, [(0, 1000), (1000, 3000), (3000, 5000), (5000, 7000)])
         self.assertEqual(without_first, [(1000, 3000), (3000, 5000), (5000, 7000)])
+
+    def test_filtered_split_markers_merges_manual_additions_and_exclusions(self):
+        markers = [1000, 3000, 5000]
+        params = {
+            "manual_split_additions": {0: {"detection": {2000}}},
+            "manual_split_exclusions": {0: {"detection": {3000}}},
+        }
+
+        result = MODULE.SamplerProcessors.filtered_split_markers(markers, params, 0, "detection")
+
+        self.assertEqual(result, [1000, 2000, 5000])
+
+    def test_filtered_split_markers_addition_does_not_duplicate_existing_marker(self):
+        markers = [1000, 3000]
+        params = {"manual_split_additions": {0: {"detection": {1000}}}}
+
+        result = MODULE.SamplerProcessors.filtered_split_markers(markers, params, 0, "detection")
+
+        self.assertEqual(result, [1000, 3000])
+
+    def test_filtered_split_markers_with_no_manual_state_returns_markers_unchanged(self):
+        markers = [1000, 3000]
+
+        result = MODULE.SamplerProcessors.filtered_split_markers(markers, {}, 0, "detection")
+
+        self.assertEqual(result, [1000, 3000])
 
     def test_crossfade_between_zones_expands_key_ranges_around_boundaries(self):
         full_velocity = {"min": "1", "max": "127", "xfade_min": "1", "xfade_max": "127"}
@@ -2080,6 +2208,41 @@ class SamplerAdvProcessorTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertGreater(float(MODULE.get_value(model.get_zone(0), "Volume", "0")), 1.0)
+
+    def test_normalize_zone_volumes_caps_sampler_volume_at_24_db(self):
+        samples = MODULE.np.full(4096, 0.001, dtype=MODULE.np.float32)
+        model = FakeNormalizeModel(samples, volume="1.0")
+        audio_cache = FakeNormalizeAudioCache(model)
+
+        count = MODULE.SamplerProcessors.normalize_zone_volumes(
+            model,
+            {"param_normalize_mode": "peak", "param_normalize_amount_pct": "100"},
+            audio_cache,
+        )
+
+        self.assertEqual(count, 1)
+        new_volume = float(MODULE.get_value(model.get_zone(0), "Volume", "0"))
+        self.assertAlmostEqual(new_volume, MODULE.db_to_linear(24.0), places=6)
+
+    def test_normalize_zone_volumes_shifts_all_targets_under_24_db(self):
+        desired_a_db = 26.0
+        desired_b_db = 22.0
+        sample_a = MODULE.np.full(4096, 0.99 / MODULE.db_to_linear(desired_a_db), dtype=MODULE.np.float32)
+        sample_b = MODULE.np.full(4096, 0.99 / MODULE.db_to_linear(desired_b_db), dtype=MODULE.np.float32)
+        model = FakeMultiNormalizeModel([sample_a, sample_b], volume="1.0")
+        audio_cache = FakeNormalizeAudioCache(model)
+
+        count = MODULE.SamplerProcessors.normalize_zone_volumes(
+            model,
+            {"param_normalize_mode": "peak", "param_normalize_amount_pct": "100"},
+            audio_cache,
+        )
+
+        self.assertEqual(count, 2)
+        volume_a = float(MODULE.get_value(model.get_zone(0), "Volume", "0"))
+        volume_b = float(MODULE.get_value(model.get_zone(1), "Volume", "0"))
+        self.assertAlmostEqual(MODULE.linear_to_db(volume_a), 24.0, places=4)
+        self.assertAlmostEqual(MODULE.linear_to_db(volume_b), 20.0, places=4)
 
     def test_detect_zone_loops_updates_sustain_and_release(self):
         sr = 48000

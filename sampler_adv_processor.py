@@ -3766,6 +3766,28 @@ class SamplerProcessors:
         return bounds
 
     @staticmethod
+    def filtered_split_markers(markers, params, zone_index, mode):
+        result = list(markers)
+
+        additions = params.get("manual_split_additions") or {}
+        zone_additions = additions.get(int(zone_index), additions.get(str(zone_index), {}))
+        mode_additions = zone_additions.get(mode, zone_additions.get(str(mode), []))
+        added = {int(v) for v in mode_additions}
+        if added:
+            existing = {int(marker) for marker in result}
+            result.extend(sorted(added - existing))
+            result.sort()
+
+        exclusions = params.get("manual_split_exclusions") or {}
+        zone_exclusions = exclusions.get(int(zone_index), exclusions.get(str(zone_index), {}))
+        mode_exclusions = zone_exclusions.get(mode, zone_exclusions.get(str(mode), []))
+        excluded = {int(v) for v in mode_exclusions}
+        if excluded:
+            result = [marker for marker in result if int(marker) not in excluded]
+
+        return result
+
+    @staticmethod
     def split_selected_zone_by_detection(model, zone_index, params, audio_cache, log_func=None):
         def log(text):
             if log_func:
@@ -3807,6 +3829,7 @@ class SamplerProcessors:
             min_duration_samples=min_duration_samples,
             profile_compression_pct=profile_compression_pct,
         )
+        onsets = SamplerProcessors.filtered_split_markers(onsets, params, zone_index, "detection")
 
         if not onsets:
             log("Detection split: no usable onset found inside selected zone.\n")
@@ -3895,6 +3918,7 @@ class SamplerProcessors:
             stop_hysteresis_pct=stop_hysteresis_pct,
             start_placement=start_placement,
         )
+        onsets = SamplerProcessors.filtered_split_markers(onsets, params, zone_index, "gate")
 
         if not onsets:
             log("Detect split: no usable level region found inside selected zone.\n")
@@ -4088,6 +4112,19 @@ class SamplerProcessors:
             if idx > 2048:
                 raise RuntimeError("Too many zones generated (>2048). Check tempo/grid settings.")
 
+        kept_relative_starts = set(SamplerProcessors.filtered_split_markers(
+            [int(float(get_value(zone, "SampleStart", "0"))) - original_start for zone in new_zones],
+            params,
+            zone_index,
+            "grid",
+        ))
+        if kept_relative_starts:
+            new_zones = [
+                zone for zone in new_zones
+                if int(float(get_value(zone, "SampleStart", "0"))) == original_start
+                or (int(float(get_value(zone, "SampleStart", "0"))) - original_start) in kept_relative_starts
+            ]
+
         if not new_zones:
             raise RuntimeError("Grid split produced no zones.")
 
@@ -4234,6 +4271,8 @@ class SamplerProcessors:
         mode_lower = mode.lower()
         target = AudioAnalysis.NORMALIZE_TARGET_PEAK if mode_lower == "peak" else AudioAnalysis.NORMALIZE_TARGET_RMS
         normalize_amount = max(0.0, min(1.0, parse_number_from_text(params.get("param_normalize_amount_pct", "100"), 100.0) / 100.0))
+        max_sampler_volume = db_to_linear(24.0)
+        candidates = []
         updated = 0
 
         for i in range(model.zone_count()):
@@ -4255,10 +4294,20 @@ class SamplerProcessors:
                 fully_normalized_volume = target / raw_level
 
             max_safe_volume = 0.99 / raw_peak
-            fully_normalized_volume = min(fully_normalized_volume, max_safe_volume)
+            candidates.append((i, zone, fully_normalized_volume, max_safe_volume))
+
+        global_scale = 1.0
+        for _i, _zone, fully_normalized_volume, max_safe_volume in candidates:
+            if fully_normalized_volume <= 1e-12:
+                continue
+            global_scale = min(global_scale, max_sampler_volume / fully_normalized_volume)
+            global_scale = min(global_scale, max_safe_volume / fully_normalized_volume)
+
+        for i, zone, fully_normalized_volume, max_safe_volume in candidates:
+            fully_normalized_volume = fully_normalized_volume * global_scale
             current_volume = float(get_value(zone, "Volume", "1") or 1.0)
             new_volume = current_volume + ((fully_normalized_volume - current_volume) * normalize_amount)
-            new_volume = min(new_volume, max_safe_volume)
+            new_volume = min(new_volume, max_safe_volume, max_sampler_volume)
 
             if abs(new_volume - current_volume) < 1e-7:
                 continue
@@ -4279,7 +4328,7 @@ class SamplerProcessors:
             log("Volume normalization: no zone volume changed.\n")
         else:
             target_label = AudioAnalysis.NORMALIZE_TARGET_LUFS if mode_lower == "lufs" else round(target, 6)
-            log("Volume normalization: updated {} zone(s) with {} target {} at {:.1f}% amount.\n".format(updated, mode, target_label, normalize_amount * 100.0))
+            log("Volume normalization: updated {} zone(s) with {} target {} at {:.1f}% amount, global scale {:.6f}.\n".format(updated, mode, target_label, normalize_amount * 100.0, global_scale))
 
         return updated
 
@@ -5306,6 +5355,97 @@ class SamplerProcessors:
         return updated
 
     @staticmethod
+    def apply_gamma_to_existing_velocity_ranges(model, gamma=1.0, log_func=None):
+        """
+        Reshape each zone's existing VelocityRange boundaries with a gamma curve,
+        without changing zone count, order, or playback-area grouping.
+
+        Unlike distribute_velocity_by_play_area, this does not recompute boundaries
+        from scratch: it reads the current Min/Max already on each zone (e.g. set by
+        filename mapping or manual edits), sorts them within each KeyRange+SelectorRange
+        group, and warps the boundary positions through gamma while keeping the
+        group's overall min/max span fixed.
+        """
+        def log(text):
+            if log_func:
+                log_func(text)
+
+        try:
+            gamma = float(gamma)
+        except Exception:
+            gamma = 1.0
+        if gamma <= 0:
+            gamma = 1.0
+
+        group_to_indices = {}
+        for i in range(model.zone_count()):
+            zone = model.get_zone(i)
+            key = SamplerProcessors.zone_play_area_key(model, zone)
+            group_to_indices.setdefault(key, []).append(i)
+
+        updated = 0
+        groups = 0
+
+        for key, indices in sorted(group_to_indices.items(), key=lambda item: item[0]):
+            entries = []
+            for i in indices:
+                zone = model.get_zone(i)
+                values = model.read_range(zone, "VelocityRange")
+                try:
+                    mn = clamp_int(values["min"], 1, 127)
+                    mx = clamp_int(values["max"], 1, 127)
+                except Exception:
+                    continue
+                if mx < mn:
+                    mn, mx = mx, mn
+                entries.append((i, mn, mx))
+
+            if len(entries) < 2:
+                continue
+
+            entries.sort(key=lambda item: (item[1], item[2]))
+            overall_min = entries[0][1]
+            overall_max = entries[-1][2]
+            # Cut points live in boundary space (range [a, b] spans cut points
+            # [a, b + 1]), so the normalizing span must include that extra unit.
+            span = (overall_max + 1) - overall_min
+            if span <= 0:
+                continue
+
+            cut_points = [overall_min] + [mx + 1 for _i, _mn, mx in entries]
+            cut_points[-1] = max(cut_points[-1], overall_max + 1)
+
+            warped = []
+            for point in cut_points:
+                x = max(0.0, min(1.0, (point - overall_min) / float(span)))
+                warped.append(overall_min + pow(x, gamma) * span)
+
+            groups += 1
+            log("  Area KeyRange {}-{}, SelectorRange {}-{}: {} zone(s), gamma={}\n".format(
+                key[0], key[1], key[2], key[3], len(entries), gamma
+            ))
+
+            for idx, (zone_index, _old_min, _old_max) in enumerate(entries):
+                new_min = clamp_int(int(round(warped[idx])), 1, 127)
+                new_max = clamp_int(int(round(warped[idx + 1])) - 1, new_min, 127)
+                zone = model.get_zone(zone_index)
+                model.write_range(zone, "VelocityRange", {
+                    "min": str(new_min),
+                    "max": str(new_max),
+                    "xfade_min": str(new_min),
+                    "xfade_max": str(new_max),
+                })
+                updated += 1
+                log("    zone {} -> VelocityRange {}-{}\n".format(zone_index, new_min, new_max))
+
+        if updated == 0:
+            log("Velocity gamma: no multi-zone playback-area group found, so nothing was changed.\n")
+        else:
+            log("Velocity gamma: reshaped {} zones across {} playback-area group(s). gamma={}\n".format(updated, groups, gamma))
+
+        return updated
+
+    @staticmethod
     def spread_velocity_ranges_for_count(count, gamma=1.0):
         if count <= 0:
             return []
@@ -5415,6 +5555,83 @@ class SamplerProcessors:
             log("Velocity sort: no playback-area group found, so nothing was changed.\n")
         else:
             log("Velocity sort: updated {} zones across {} playback-area group(s). gamma={}\n".format(updated, groups, gamma))
+        return updated
+
+    @staticmethod
+    def sort_velocity_round_robin_by_play_area(model, audio_cache, alternatives=1, gamma=1.0, log_func=None):
+        def log(text):
+            if log_func:
+                log_func(text)
+
+        alternatives = clamp_int(parse_number_from_text(alternatives, 1), 1, 128)
+        if alternatives <= 1:
+            return SamplerProcessors.sort_velocity_by_play_area(
+                model,
+                audio_cache,
+                gamma=gamma,
+                log_func=log_func,
+            )
+        try:
+            gamma = float(gamma)
+        except Exception:
+            gamma = 1.0
+        if gamma <= 0:
+            gamma = 1.0
+
+        group_to_entries = {}
+        for i in range(model.zone_count()):
+            zone = model.get_zone(i)
+            audio = audio_cache.get_zone_audio(model, zone)
+            score = AudioAnalysis.estimate_note_strength(audio.samples, audio.sample_rate)
+            key = SamplerProcessors.zone_play_area_key(model, zone)
+            group_to_entries.setdefault(key, []).append((i, float(score)))
+
+        log("Velocity sort + RR: found {} zones in {} playback-area group(s). alternatives={}\n".format(
+            model.zone_count(),
+            len(group_to_entries),
+            alternatives,
+        ))
+
+        updated = 0
+        groups = 0
+        for key, entries in sorted(group_to_entries.items(), key=lambda item: item[0]):
+            ranked_entries = sorted(entries, key=lambda item: (item[1], item[0]))
+            chunks = [
+                ranked_entries[start:start + alternatives]
+                for start in range(0, len(ranked_entries), alternatives)
+            ]
+            velocity_ranges = SamplerProcessors.spread_velocity_ranges_for_count(len(chunks), gamma=gamma)
+            if len(entries) > 1:
+                groups += 1
+            log("  Area KeyRange {}-{}, SelectorRange {}-{}: {} zone(s), {} velocity layer(s)\n".format(
+                key[0], key[1], key[2], key[3], len(entries), len(chunks)
+            ))
+            for chunk, (vel_min, vel_max) in zip(chunks, velocity_ranges):
+                # Zones within a chunk intentionally share one VelocityRange so Ableton's
+                # native Sampler round-robin can cycle between them. SelectorRange is left
+                # untouched here; use the separate "Chain ranges" mapping if a chain split
+                # is actually wanted.
+                for alt_index, (zone_index, score) in enumerate(chunk, start=1):
+                    zone = model.get_zone(zone_index)
+                    model.write_range(zone, "VelocityRange", {
+                        "min": str(vel_min),
+                        "max": str(vel_max),
+                        "xfade_min": str(vel_min),
+                        "xfade_max": str(vel_max),
+                    })
+                    updated += 1
+                    log("    zone {} (strength {:.6f}, alt {}) -> VelocityRange {}-{}\n".format(
+                        zone_index,
+                        score,
+                        alt_index,
+                        vel_min,
+                        vel_max,
+                    ))
+
+        if updated == 0:
+            log("Velocity sort + RR: no playback-area group found, so nothing was changed.\n")
+        else:
+            log("Velocity sort + RR: updated {} zones across {} playback-area group(s). gamma={} alternatives={}\n".format(updated, groups, gamma, alternatives))
         return updated
 
     @staticmethod
@@ -6254,9 +6471,19 @@ class SamplerProcessors:
                 )
                 model.refresh()
             elif mode == "sort by loudness":
-                total_changes += SamplerProcessors.sort_velocity_by_play_area(
+                total_changes += SamplerProcessors.sort_velocity_round_robin_by_play_area(
                     model,
                     audio_cache=require_audio_cache(),
+                    alternatives=global_values.get("param_velocity_sort_rr_alternatives", "1"),
+                    gamma=global_values.get("param_velocity_gamma", "1.0"),
+                    log_func=log_func,
+                )
+                model.refresh()
+            elif mode == "sort by loudness + rr":
+                total_changes += SamplerProcessors.sort_velocity_round_robin_by_play_area(
+                    model,
+                    audio_cache=require_audio_cache(),
+                    alternatives=global_values.get("param_velocity_sort_rr_alternatives", "2"),
                     gamma=global_values.get("param_velocity_gamma", "1.0"),
                     log_func=log_func,
                 )
@@ -6278,12 +6505,19 @@ class SamplerProcessors:
                     log_func=log_func,
                 )
                 model.refresh()
+            elif mode == "add gamma":
+                total_changes += SamplerProcessors.apply_gamma_to_existing_velocity_ranges(
+                    model,
+                    gamma=global_values.get("param_velocity_gamma", "1.0"),
+                    log_func=log_func,
+                )
+                model.refresh()
             elif mode == "from filename":
                 pass
             else:
                 log("Velocity ranges: unknown method {}; skipped.\n".format(mode))
 
-            if processing_update.get("auto_volume_vel_scale", False) and mode in ("spread", "sort by loudness", "detect loudness"):
+            if processing_update.get("auto_volume_vel_scale", False) and mode in ("spread", "sort by loudness", "sort by loudness + rr", "detect loudness"):
                 total_changes += SamplerProcessors.auto_volume_velocity_scale(
                     model,
                     log_func=log_func,
@@ -6586,6 +6820,9 @@ class SamplerAdvGui:
         self.waveform_analysis_cache = {}
         self.waveform_refresh_after_id = None
         self.waveform_view_state = None
+        self.auto_update_waveform_var = tk.BooleanVar(value=True)
+        self.manual_split_exclusions = {}
+        self.manual_split_additions = {}
         self.dynamic_lfo_keys = []
         self.dynamic_midi_keys = []
         self.dynamic_filter_keys = []
@@ -6650,6 +6887,23 @@ class SamplerAdvGui:
 
         waveform_frame = ttk.LabelFrame(main, text="Waveform")
         waveform_frame.pack(fill="x", pady=(0, 8))
+
+        waveform_toolbar = ttk.Frame(waveform_frame)
+        waveform_toolbar.pack(fill="x", padx=6, pady=(6, 0))
+        auto_update_check = ttk.Checkbutton(
+            waveform_toolbar,
+            text="Auto-update preview",
+            variable=self.auto_update_waveform_var,
+        )
+        auto_update_check.pack(side="left")
+        add_tooltip(
+            auto_update_check,
+            "When unchecked, the waveform preview no longer refreshes automatically while you edit "
+            "(useful when updates like loop point recalculation freeze the UI for a while). "
+            "Use Refresh now to update it on demand."
+        )
+        ttk.Button(waveform_toolbar, text="Refresh now", command=self.refresh_waveform_now).pack(side="left", padx=(8, 0))
+
         self.waveform_canvas = tk.Canvas(
             waveform_frame,
             height=180,
@@ -6662,6 +6916,13 @@ class SamplerAdvGui:
         self.waveform_canvas.bind("<MouseWheel>", self.on_waveform_mousewheel)
         self.waveform_canvas.bind("<Button-4>", self.on_waveform_mousewheel)
         self.waveform_canvas.bind("<Button-5>", self.on_waveform_mousewheel)
+        self.waveform_canvas.bind("<Button-3>", self.on_waveform_right_click)
+        self.waveform_canvas.bind("<Shift-Button-3>", self.on_waveform_shift_right_click)
+        add_tooltip(
+            self.waveform_canvas,
+            "While a detection or gate split preview is shown: right-click removes the nearest split marker; "
+            "Shift+right-click adds a new split marker at the click position."
+        )
 
         body = ttk.PanedWindow(main, orient="horizontal")
         body.pack(fill="both", expand=True)
@@ -6774,6 +7035,7 @@ class SamplerAdvGui:
             "param_velocity_range_min",
             "param_velocity_range_max",
             "param_velocity_range_method",
+            "param_velocity_sort_rr_alternatives",
             "param_chain_range_min",
             "param_chain_range_max",
             "param_chain_range_method",
@@ -7998,7 +8260,7 @@ class SamplerAdvGui:
         )
         mrow += 1
 
-        velocity_range_var, velocity_range_method_var = self._checked_choice_row(mapping_box, mrow, "Velocity ranges", "velocity_range_mapping", "param_velocity_range_method", ["from filename", "spread", "sort by loudness", "detect loudness", "full", "extend"], "spread", tooltip="Write VelocityRange boundaries. spread/sort/detect only compare zones with the same KeyRange and current SelectorRange; full writes every zone to the configured velocity span.")
+        velocity_range_var, velocity_range_method_var = self._checked_choice_row(mapping_box, mrow, "Velocity ranges", "velocity_range_mapping", "param_velocity_range_method", ["from filename", "spread", "sort by loudness", "detect loudness", "full", "extend", "add gamma"], "spread", tooltip="Write VelocityRange boundaries. spread/sort/detect only compare zones with the same KeyRange and current SelectorRange; sort can also write SelectorRange round-robin alternatives when RR alternatives is above 1. add gamma keeps existing VelocityRange boundaries and zone count, just reshapes the boundaries with the gamma curve.")
         try:
             velocity_range_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
             velocity_range_method_var.trace_add("write", lambda *_args: self._refresh_pitch_detection_visibility())
@@ -8018,8 +8280,12 @@ class SamplerAdvGui:
         velocity_gamma_row.grid(row=0, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         velocity_gamma_row.columnconfigure(1, weight=1)
         self._param_row(velocity_gamma_row, 0, "Gamma", "param_velocity_gamma", "1.0", tooltip="Non-linear velocity distribution for spread velocity. gamma < 1 gives lower velocities more range; gamma > 1 gives higher velocities more range.")
+        velocity_rr_row = ttk.Frame(velocity_range_options)
+        velocity_rr_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        velocity_rr_row.columnconfigure(1, weight=1)
+        self._param_row(velocity_rr_row, 0, "RR alternatives", "param_velocity_sort_rr_alternatives", "1", tooltip="Number of zones grouped into each sorted velocity layer, sharing one VelocityRange so Ableton's native Sampler round-robin can cycle between them. 1 is plain sort by loudness. SelectorRange/chain is not touched here; use the Chain ranges mapping if you also want a chain split.")
         velocity_full_row = ttk.Frame(velocity_range_options)
-        velocity_full_row.grid(row=1, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
+        velocity_full_row.grid(row=2, column=0, columnspan=3, sticky="ew", padx=0, pady=0)
         velocity_full_row.columnconfigure(2, weight=1)
         self._param_row(velocity_full_row, 0, "Min velocity", "param_velocity_range_min", "1", tooltip="Lowest velocity used by full velocity range mode.")
         self._param_row(velocity_full_row, 1, "Max velocity", "param_velocity_range_max", "127", tooltip="Highest velocity used by full velocity range mode.")
@@ -8027,7 +8293,12 @@ class SamplerAdvGui:
         self._register_visibility_rule(
             velocity_range_method_var,
             velocity_gamma_row,
-            predicate=lambda value: bool(velocity_range_var.get()) and str(value).strip().lower() in ("spread", "sort by loudness"),
+            predicate=lambda value: bool(velocity_range_var.get()) and str(value).strip().lower() in ("spread", "sort by loudness", "add gamma"),
+        )
+        self._register_visibility_rule(
+            velocity_range_method_var,
+            velocity_rr_row,
+            predicate=lambda value: bool(velocity_range_var.get()) and str(value).strip().lower() == "sort by loudness",
         )
         self._register_visibility_rule(
             velocity_range_method_var,
@@ -8577,6 +8848,8 @@ class SamplerAdvGui:
             self.adv_path = path
             self.model = model
             self.current_zone_index = None
+            self.manual_split_exclusions = {}
+            self.manual_split_additions = {}
             self.clear_waveform_caches(reset_audio=True)
             self.reset_waveform_view()
             self.rebuild_generic_lfo_fields()
@@ -8606,6 +8879,8 @@ class SamplerAdvGui:
         self.model = None
         self.adv_path = None
         self.current_zone_index = None
+        self.manual_split_exclusions = {}
+        self.manual_split_additions = {}
         self.clear_waveform_caches(reset_audio=True)
         self.reset_waveform_view()
         self.path_var.set("")
@@ -8715,6 +8990,8 @@ class SamplerAdvGui:
         zone = model.get_zone(0)
         self.model = model
         self.adv_path = None
+        self.manual_split_exclusions = {}
+        self.manual_split_additions = {}
         user_name_node = find_first_value_node_by_tag(model.root, "UserName")
         if user_name_node is not None:
             user_name_node.set("Value", audio_path.stem)
@@ -8762,6 +9039,8 @@ class SamplerAdvGui:
             self.apply_current_zone_to_xml()
 
         global_values = self.collect_global_values()
+        global_values["manual_split_exclusions"] = copy.deepcopy(self.manual_split_exclusions)
+        global_values["manual_split_additions"] = copy.deepcopy(self.manual_split_additions)
         processing_flags = {k: v.get() for k, v in self.processing_update.items()}
         self.status_var.set("Processing...")
 
@@ -9100,12 +9379,25 @@ class SamplerAdvGui:
     def schedule_waveform_refresh(self, *_args, delay_ms=WAVEFORM_REFRESH_DEBOUNCE_MS):
         if not hasattr(self, "waveform_canvas"):
             return
+        if not bool(self.auto_update_waveform_var.get()):
+            return
         if self.waveform_refresh_after_id is not None:
             try:
                 self.root.after_cancel(self.waveform_refresh_after_id)
             except Exception:
                 pass
         self.waveform_refresh_after_id = self.root.after(delay_ms, self.update_waveform_preview)
+
+    def refresh_waveform_now(self):
+        if not hasattr(self, "waveform_canvas"):
+            return
+        if self.waveform_refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self.waveform_refresh_after_id)
+            except Exception:
+                pass
+            self.waveform_refresh_after_id = None
+        self.update_waveform_preview()
 
     def draw_waveform_message(self, title, detail=""):
         if not hasattr(self, "waveform_canvas"):
@@ -9250,16 +9542,73 @@ class SamplerAdvGui:
     def current_preview_slice_bounds(self, zone_audio, samples, overlay_flags):
         if overlay_flags["split_detection"]:
             onsets, bounds = self.current_detection_split_preview(samples, zone_audio.sample_rate)
+            onsets = self.filtered_preview_split_markers("detection", onsets)
+            bounds = self.bounds_from_preview_markers(zone_audio, onsets, "detection")
             return bounds, onsets, []
         if overlay_flags["split_gate"]:
             onsets, bounds = self.current_gate_split_preview(samples, zone_audio.sample_rate)
+            onsets = self.filtered_preview_split_markers("gate", onsets)
+            bounds = self.bounds_from_preview_markers(zone_audio, onsets, "gate")
             return bounds, onsets, []
         if overlay_flags["split_grid"]:
             grid_markers = self.current_grid_split_markers(zone_audio)
+            grid_markers = self.filtered_preview_grid_markers(grid_markers)
             if not grid_markers:
                 return [(0, len(samples))], [], []
             return [(int(start), int(end)) for start, end in grid_markers], [], grid_markers
         return [(0, len(samples))], [], []
+
+    def filtered_preview_split_markers(self, mode, markers):
+        if self.current_zone_index is None:
+            return list(markers)
+
+        result = list(markers)
+        added = self.manual_split_additions.get(int(self.current_zone_index), {}).get(mode, set())
+        if added:
+            existing = {int(marker) for marker in result}
+            result.extend(sorted(added - existing))
+            result.sort()
+
+        excluded = self.manual_split_exclusions.get(int(self.current_zone_index), {}).get(mode, set())
+        if excluded:
+            result = [marker for marker in result if int(marker) not in excluded]
+
+        return result
+
+    def filtered_preview_grid_markers(self, grid_markers):
+        if self.current_zone_index is None:
+            return list(grid_markers)
+        excluded = self.manual_split_exclusions.get(int(self.current_zone_index), {}).get("grid", set())
+        if not excluded:
+            return list(grid_markers)
+        return [
+            marker for marker in grid_markers
+            if int(marker[0]) == 0 or int(marker[0]) not in excluded
+        ]
+
+    def bounds_from_preview_markers(self, zone_audio, markers, mode):
+        if mode == "detection":
+            min_duration = int(parse_number_from_text(
+                self.global_vars.get("param_min_duration", tk.StringVar(value=DEFAULT_DETECTION_SPLIT_MIN_DURATION)).get(),
+                parse_number_from_text(DEFAULT_DETECTION_SPLIT_MIN_DURATION, 1000),
+            ))
+            include_first = bool(self.global_vars.get("param_split_include_first_zone", tk.BooleanVar(value=False)).get())
+        else:
+            min_duration = int(parse_number_from_text(
+                self.global_vars.get("param_gate_min_duration", tk.StringVar(value=DEFAULT_GATE_SPLIT_MIN_DURATION)).get(),
+                parse_number_from_text(DEFAULT_GATE_SPLIT_MIN_DURATION, 2000),
+            ))
+            include_first = bool(self.global_vars.get("param_gate_include_first_zone", tk.BooleanVar(value=False)).get())
+        bounds = SamplerProcessors.split_boundaries_from_onsets(
+            zone_audio.zone_start,
+            zone_audio.zone_end,
+            markers,
+            min_duration,
+            include_first_zone=include_first,
+        )
+        if len(bounds) <= 1:
+            return [(0, len(zone_audio.samples))]
+        return [(int(start - zone_audio.zone_start), int(end - zone_audio.zone_start)) for start, end in bounds]
 
     def current_refine_preview_params(self, sample_rate, sample_count):
         release_threshold = parse_number_from_text(
@@ -10497,6 +10846,100 @@ class SamplerAdvGui:
 
         self.waveform_view_state["start"] = new_start
         self.waveform_view_state["end"] = new_end
+        self.schedule_waveform_refresh()
+        return "break"
+
+    def on_waveform_right_click(self, event):
+        if self.model is None or self.current_zone_index is None:
+            return "break"
+        overlay_flags = self.current_waveform_overlay_flags()
+        mode = None
+        if overlay_flags["split_detection"]:
+            mode = "detection"
+        elif overlay_flags["split_gate"]:
+            mode = "gate"
+        elif overlay_flags["split_grid"]:
+            mode = "grid"
+        if mode is None:
+            return "break"
+
+        try:
+            zone = self.model.get_zone(self.current_zone_index)
+            zone_audio = self.waveform_cache.get_zone_audio(self.model, zone)
+            samples = np.asarray(zone_audio.samples, dtype=np.float32)
+        except Exception:
+            return "break"
+
+        if mode == "detection":
+            markers, _bounds = self.current_detection_split_preview(samples, zone_audio.sample_rate)
+        elif mode == "gate":
+            markers, _bounds = self.current_gate_split_preview(samples, zone_audio.sample_rate)
+        else:
+            markers = [start for start, _end in self.current_grid_split_markers(zone_audio) if int(start) != 0]
+        markers = self.filtered_preview_split_markers(mode, markers)
+        if not markers:
+            return "break"
+
+        view_start, view_end = self.ensure_waveform_view_state(zone_audio)
+        canvas_width = max(1, int(self.waveform_canvas.winfo_width() or 1))
+        left = 8
+        right = max(left + 1, canvas_width - 8)
+        usable_width = max(1, right - left)
+        pointer_x = max(left, min(int(getattr(event, "x", left)), right))
+        view_length = max(1, view_end - view_start)
+        pointer_abs = view_start + int(round(((pointer_x - left) / float(usable_width)) * view_length))
+        pointer_rel = pointer_abs - zone_audio.zone_start
+        nearest = min(markers, key=lambda marker: abs(int(marker) - int(pointer_rel)))
+        nearest_abs = zone_audio.zone_start + int(nearest)
+        nearest_x = self.waveform_sample_to_x(nearest_abs - view_start, max(1, view_length - 1), left, usable_width)
+        if abs(nearest_x - pointer_x) > 16:
+            return "break"
+
+        zone_exclusions = self.manual_split_exclusions.setdefault(int(self.current_zone_index), {})
+        zone_exclusions.setdefault(mode, set()).add(int(nearest))
+        self.clear_waveform_caches(reset_audio=False)
+        self.log_insert("Manual split: removed {} marker at sample {} for zone {}.\n".format(mode, int(nearest), self.current_zone_index))
+        self.schedule_waveform_refresh()
+        return "break"
+
+    def on_waveform_shift_right_click(self, event):
+        if self.model is None or self.current_zone_index is None:
+            return "break"
+        overlay_flags = self.current_waveform_overlay_flags()
+        mode = None
+        if overlay_flags["split_detection"]:
+            mode = "detection"
+        elif overlay_flags["split_gate"]:
+            mode = "gate"
+        if mode is None:
+            self.log_insert("Manual split: add point only works while a detection or gate split preview is shown.\n")
+            return "break"
+
+        try:
+            zone = self.model.get_zone(self.current_zone_index)
+            zone_audio = self.waveform_cache.get_zone_audio(self.model, zone)
+        except Exception:
+            return "break"
+
+        zone_length = max(1, zone_audio.zone_end - zone_audio.zone_start)
+        view_start, view_end = self.ensure_waveform_view_state(zone_audio)
+        canvas_width = max(1, int(self.waveform_canvas.winfo_width() or 1))
+        left = 8
+        right = max(left + 1, canvas_width - 8)
+        usable_width = max(1, right - left)
+        pointer_x = max(left, min(int(getattr(event, "x", left)), right))
+        view_length = max(1, view_end - view_start)
+        pointer_abs = view_start + int(round(((pointer_x - left) / float(usable_width)) * view_length))
+        pointer_rel = pointer_abs - zone_audio.zone_start
+        pointer_rel = max(1, min(zone_length - 1, int(pointer_rel)))
+
+        zone_additions = self.manual_split_additions.setdefault(int(self.current_zone_index), {})
+        zone_additions.setdefault(mode, set()).add(pointer_rel)
+        zone_exclusions = self.manual_split_exclusions.get(int(self.current_zone_index), {})
+        zone_exclusions.get(mode, set()).discard(pointer_rel)
+
+        self.clear_waveform_caches(reset_audio=False)
+        self.log_insert("Manual split: added {} marker at sample {} for zone {}.\n".format(mode, pointer_rel, self.current_zone_index))
         self.schedule_waveform_refresh()
         return "break"
 
